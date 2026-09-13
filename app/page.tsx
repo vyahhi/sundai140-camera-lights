@@ -7,17 +7,14 @@ const ROWS = 17;
 const COLS = 9;
 const WORK_SCALE = 8;
 type Status = "idle" | "starting" | "ready" | "live" | "error";
-type FilterId = "natural" | "portrait" | "caricature" | "stick" | "neon" | "mono";
+type FilterId = "natural" | "portrait" | "stick";
 type FaceStatus = "off" | "loading" | "searching" | "locked" | "error";
 type Landmark = { x: number; y: number; z: number; visibility?: number };
 type Crop = { x: number; y: number; width: number; height: number };
 const FILTERS: { id: FilterId; label: string }[] = [
   { id: "natural", label: "Natural" },
   { id: "portrait", label: "Portrait" },
-  { id: "caricature", label: "Caricature" },
   { id: "stick", label: "Stick Man" },
-  { id: "neon", label: "Neon" },
-  { id: "mono", label: "Mono" },
 ];
 
 const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
@@ -34,31 +31,6 @@ const STICK_PARTS: { connections: [number, number][]; start: string; end: string
 ];
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
-
-function applyFilter(image: ImageData, filter: FilterId) {
-  if (filter === "natural" || filter === "portrait" || filter === "caricature") return;
-  const { data, width, height } = image;
-  const source = new Uint8ClampedArray(data);
-  const luminance = (index: number) => source[index] * .299 + source[index + 1] * .587 + source[index + 2] * .114;
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const index = (y * width + x) * 4;
-    const left = (y * width + Math.max(0, x - 1)) * 4;
-    const right = (y * width + Math.min(width - 1, x + 1)) * 4;
-    const up = (Math.max(0, y - 1) * width + x) * 4;
-    const down = (Math.min(height - 1, y + 1) * width + x) * 4;
-    const edge = Math.abs(luminance(right) - luminance(left)) + Math.abs(luminance(down) - luminance(up));
-    const light = luminance(index);
-    if (filter === "neon") {
-      const glow = Math.min(255, edge * 3.2);
-      data[index] = clamp(glow * .75 + light * .12);
-      data[index + 1] = clamp(glow + light * .08);
-      data[index + 2] = clamp(120 + glow * .72);
-    } else {
-      const value = light > 120 ? 255 : light > 62 ? 145 : 8;
-      data[index] = value; data[index + 1] = value; data[index + 2] = value;
-    }
-  }
-}
 
 function meanPoint(landmarks: Landmark[], indexes: number[]) {
   const total = indexes.reduce((sum, index) => ({ x: sum.x + landmarks[index].x, y: sum.y + landmarks[index].y }), { x: 0, y: 0 });
@@ -228,64 +200,6 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
   context.putImageData(pixels, 0, 0);
 }
 
-function applyCaricatureWarp(canvas: HTMLCanvasElement, landmarks: Landmark[], crop: Crop, mirror: boolean, strength: number) {
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return;
-  const toPixel = (point: Landmark | { x: number; y: number }) => {
-    let x = (point.x - crop.x) / crop.width * canvas.width;
-    if (mirror) x = canvas.width - x;
-    return { x, y: (point.y - crop.y) / crop.height * canvas.height };
-  };
-  const leftEye = toPixel(meanPoint(landmarks, LEFT_EYE));
-  const rightEye = toPixel(meanPoint(landmarks, RIGHT_EYE));
-  const mouth = toPixel(meanPoint(landmarks, [13, 14, 0, 17]));
-  const mouthLeft = toPixel(landmarks[61]);
-  const mouthRight = toPixel(landmarks[291]);
-  const templeA = toPixel(landmarks[234]);
-  const templeB = toPixel(landmarks[454]);
-  const forehead = toPixel(landmarks[10]);
-  const chin = toPixel(landmarks[152]);
-  const center = { x: (templeA.x + templeB.x) / 2, y: (forehead.y + chin.y) / 2 };
-  const faceRx = Math.max(8, Math.abs(templeB.x - templeA.x) / 2);
-  const faceRy = Math.max(12, Math.abs(chin.y - forehead.y) / 2);
-  const eyeRadius = Math.max(4, Math.abs(rightEye.x - leftEye.x) * .29);
-  const mouthRadius = Math.max(5, Math.abs(mouthRight.x - mouthLeft.x) * .72);
-  const amount = Math.max(0, Math.min(1, (strength - .5) / 1.3));
-  const source = context.getImageData(0, 0, canvas.width, canvas.height);
-  const output = context.createImageData(canvas.width, canvas.height);
-
-  const magnify = (position: { x: number; y: number }, feature: { x: number; y: number }, radiusX: number, radiusY: number, power: number) => {
-    const dx = (position.x - feature.x) / radiusX;
-    const dy = (position.y - feature.y) / radiusY;
-    const distance = dx * dx + dy * dy;
-    if (distance >= 1) return;
-    const pull = power * (1 - distance) ** 2;
-    position.x = feature.x + (position.x - feature.x) * (1 - pull);
-    position.y = feature.y + (position.y - feature.y) * (1 - pull);
-  };
-
-  for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
-    const sample = { x, y };
-    const faceDistance = ((x - center.x) / faceRx) ** 2 + ((y - center.y) / faceRy) ** 2;
-    if (faceDistance < 1.35) {
-      const vertical = Math.max(0, Math.min(1, (y - center.y) / faceRy));
-      sample.x = center.x + (sample.x - center.x) * (1 - .06 * amount * (.35 + vertical * .65) * (1 - faceDistance / 1.35));
-    }
-    magnify(sample, leftEye, eyeRadius * 1.45, eyeRadius, .12 * amount);
-    magnify(sample, rightEye, eyeRadius * 1.45, eyeRadius, .12 * amount);
-    magnify(sample, mouth, mouthRadius * 1.35, mouthRadius * .82, .08 * amount);
-    const sx = Math.max(0, Math.min(canvas.width - 1, Math.round(sample.x)));
-    const sy = Math.max(0, Math.min(canvas.height - 1, Math.round(sample.y)));
-    const from = (sy * canvas.width + sx) * 4;
-    const to = (y * canvas.width + x) * 4;
-    output.data[to] = source.data[from];
-    output.data[to + 1] = source.data[from + 1];
-    output.data[to + 2] = source.data[from + 2];
-    output.data[to + 3] = source.data[from + 3];
-  }
-  context.putImageData(output, 0, 0);
-}
-
 function faceRotation(landmarks: Landmark[], crop: Crop, mirror: boolean, width: number, height: number) {
   const map = (point: Landmark | { x: number; y: number }) => {
     let x = (point.x - crop.x) / crop.width * width;
@@ -321,7 +235,7 @@ function straightenFace(canvas: HTMLCanvasElement, scratch: HTMLCanvasElement, l
   return angle;
 }
 
-function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean, caricature = false, strength = 1, rotation = 0) {
+function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean, rotation = 0) {
   const rawCell = (point: Landmark | { x: number; y: number }) => {
     let x = (point.x - crop.x) / crop.width * COLS;
     if (mirror) x = COLS - x;
@@ -369,25 +283,14 @@ function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Land
     pixels.data[index + 2] = clamp(pixels.data[index + 2] * (1 - amount) + target[2] * amount);
   };
 
-  // Caricature keeps only a whisper of contour; hard outlines looked mask-like.
-  if (caricature) for (let index = 0; index < FACE_OVAL.length; index += 6) {
-    const original = cell(landmarks[FACE_OVAL[index]]);
-    const expansion = 1 + .035 * strength;
-    blendCell(
-      Math.round(faceCenter.x + (original.x - faceCenter.x) * expansion),
-      Math.round(faceCenter.y + (original.y - faceCenter.y) * 1.02),
-      [24, 31, 32],
-      .2,
-    );
-  }
   const leftEye = cell(meanPoint(landmarks, LEFT_EYE));
   const rightEye = cell(meanPoint(landmarks, RIGHT_EYE));
   const leftEyeOpen = Math.abs(landmarks[159].y - landmarks[145].y) / Math.max(.001, Math.abs(landmarks[133].x - landmarks[33].x));
   const rightEyeOpen = Math.abs(landmarks[386].y - landmarks[374].y) / Math.max(.001, Math.abs(landmarks[263].x - landmarks[362].x));
   const eyeTone: [number, number, number] = [214, 220, 205];
   const closedEye: [number, number, number] = [42, 45, 43];
-  blendCell(leftEye.x, leftEye.y, leftEyeOpen > .075 ? eyeTone : closedEye, caricature ? .42 : .3);
-  blendCell(rightEye.x, rightEye.y, rightEyeOpen > .075 ? eyeTone : closedEye, caricature ? .42 : .3);
+  blendCell(leftEye.x, leftEye.y, leftEyeOpen > .075 ? eyeTone : closedEye, .3);
+  blendCell(rightEye.x, rightEye.y, rightEyeOpen > .075 ? eyeTone : closedEye, .3);
   const leftBrow = cell(meanPoint(landmarks, LEFT_BROW));
   const rightBrow = cell(meanPoint(landmarks, RIGHT_BROW));
   blendCell(leftBrow.x, Math.min(leftEye.y - 1, leftBrow.y), [35, 32, 29], .38);
@@ -400,9 +303,9 @@ function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Land
   const mouthCenter = cell(meanPoint(landmarks, [13, 14, 0, 17]));
   const mouthMin = Math.min(mouthLeft.x, mouthRight.x);
   const mouthMax = Math.max(mouthLeft.x, mouthRight.x);
-  const mouthWidth = Math.max(1, Math.min(caricature ? 3 : 2, mouthMax - mouthMin + (caricature && strength > 1.15 ? 1 : 0)));
+  const mouthWidth = Math.max(1, Math.min(2, mouthMax - mouthMin));
   const startX = Math.max(0, Math.min(COLS - mouthWidth, mouthCenter.x - Math.floor(mouthWidth / 2)));
-  for (let x = startX; x < startX + mouthWidth; x++) blendCell(x, mouthCenter.y, [132, 58, 62], caricature ? .52 : .4);
+  for (let x = startX; x < startX + mouthWidth; x++) blendCell(x, mouthCenter.y, [132, 58, 62], .4);
   const mouthOpen = Math.abs(landmarks[13].y - landmarks[14].y) / Math.max(.001, Math.abs(landmarks[291].x - landmarks[61].x));
   if (mouthOpen > .09 && mouthCenter.y < ROWS - 1) blendCell(mouthCenter.x, mouthCenter.y + 1, [28, 20, 23], .62);
   context.putImageData(pixels, 0, 0);
@@ -431,7 +334,6 @@ export default function Home() {
   const [message, setMessage] = useState("Camera is off");
   const [brightness, setBrightness] = useState(1.15);
   const [contrast, setContrast] = useState(1.35);
-  const [caricatureStrength, setCaricatureStrength] = useState(1);
   const [mirror, setMirror] = useState(true);
   const [filter, setFilter] = useState<FilterId>("portrait");
   const [faceStatus, setFaceStatus] = useState<FaceStatus>("off");
@@ -476,7 +378,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (filter !== "portrait" && filter !== "caricature") {
+    if (filter !== "portrait") {
       faceLandmarkerRef.current?.close();
       faceLandmarkerRef.current = null;
       landmarksRef.current = null;
@@ -554,7 +456,7 @@ export default function Home() {
     if (!context || !work) return null;
     const now = performance.now();
     const sourceRatio = video.videoWidth / video.videoHeight;
-    const faceMode = filter === "portrait" || filter === "caricature";
+    const faceMode = filter === "portrait";
     const stickMode = filter === "stick";
     if (faceMode && faceLandmarkerRef.current && now - lastDetectionRef.current > 85) {
       lastDetectionRef.current = now;
@@ -649,23 +551,17 @@ export default function Home() {
     if (mirror) { work.translate(workCanvas.width, 0); work.scale(-1, 1); }
     work.drawImage(video, sx, sy, sw, sh, 0, 0, workCanvas.width, workCanvas.height);
     work.restore();
-    if (filter === "caricature" && landmarks) applyCaricatureWarp(workCanvas, landmarks, normalizedCrop, mirror, caricatureStrength);
     let rotation = 0;
     if (faceMode && landmarks) {
       const rotationCanvas = rotationCanvasRef.current ?? document.createElement("canvas");
       rotationCanvasRef.current = rotationCanvas;
       rotation = straightenFace(workCanvas, rotationCanvas, landmarks, normalizedCrop, mirror);
     }
-    if (filter !== "natural") {
-      const processed = work.getImageData(0, 0, workCanvas.width, workCanvas.height);
-      applyFilter(processed, filter);
-      work.putImageData(processed, 0, 0);
-    }
     context.clearRect(0, 0, COLS, ROWS);
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
     context.drawImage(workCanvas, 0, 0, COLS, ROWS);
-    if (faceMode && landmarks) drawSemanticPortrait(context, landmarks, normalizedCrop, mirror, filter === "caricature", caricatureStrength, rotation);
+    if (faceMode && landmarks) drawSemanticPortrait(context, landmarks, normalizedCrop, mirror, rotation);
     const finalImage = context.getImageData(0, 0, COLS, ROWS);
     const previous = previousFilterRef.current === filter ? previousPixelsRef.current : null;
     if (faceMode && previous?.length === finalImage.data.length) {
@@ -683,7 +579,7 @@ export default function Home() {
       const index = (y * COLS + x) * 4;
       return [data[index], data[index + 1], data[index + 2]];
     }));
-  }, [brightness, caricatureStrength, contrast, filter, mirror]);
+  }, [brightness, contrast, filter, mirror]);
 
   const sendFrame = useCallback(async () => {
     if (sendingRef.current) return;
@@ -753,9 +649,8 @@ export default function Home() {
           <div className="pixel-panel"><div className="pixel-header"><span>BUILDING FEED</span><strong>17 rows × 9 columns</strong></div><canvas ref={canvasRef} width={COLS} height={ROWS} aria-label="Seventeen rows by nine columns pixel preview" /></div>
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
           <fieldset className="filter-control"><legend>Look</legend><div className="filter-buttons">{FILTERS.map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div></fieldset>
-          {(filter === "portrait" || filter === "caricature") && <div className={`face-lock ${faceStatus}`}><span aria-hidden="true">◎</span><div><strong>{faceStatus === "loading" ? "Loading face detector" : faceStatus === "locked" ? filter === "caricature" ? "Caricature locked" : "Face locked" : faceStatus === "error" ? "Face model unavailable" : status === "idle" ? filter === "caricature" ? "Caricature ready" : "Portrait ready" : "Looking for a face"}</strong><small>{faceStatus === "locked" ? filter === "caricature" ? "Your distinctive features are exaggerated" : "Eyes and expression are enhanced" : faceStatus === "error" ? "Natural pixels are still available" : status === "idle" ? "Start the camera to find your features" : "Center your face inside the guide"}</small></div></div>}
+          {filter === "portrait" && <div className={`face-lock ${faceStatus}`}><span aria-hidden="true">◎</span><div><strong>{faceStatus === "loading" ? "Loading face detector" : faceStatus === "locked" ? "Face locked" : faceStatus === "error" ? "Face model unavailable" : status === "idle" ? "Portrait ready" : "Looking for a face"}</strong><small>{faceStatus === "locked" ? "Eyes and expression are enhanced" : faceStatus === "error" ? "Natural pixels are still available" : status === "idle" ? "Start the camera to find your features" : "Center your face inside the guide"}</small></div></div>}
           {filter === "stick" && <div className={`face-lock ${poseStatus}`}><span aria-hidden="true">⌁</span><div><strong>{poseStatus === "loading" ? "Loading body tracker" : poseStatus === "locked" ? "Stick Man locked" : poseStatus === "error" ? "Body model unavailable" : status === "idle" ? "Stick Man ready" : "No clear person — screen is black"}</strong><small>{poseStatus === "locked" ? "Move around — color-coded limbs follow your pose" : poseStatus === "error" ? "Choose another look to continue" : status === "idle" ? "Start with your head and shoulders in view" : "Show your face, both shoulders, and part of your arms"}</small></div></div>}
-          {filter === "caricature" && <label><span>Exaggeration <b>{caricatureStrength.toFixed(2)}×</b></span><input type="range" min="0.5" max="1.8" step="0.05" value={caricatureStrength} onChange={(event) => setCaricatureStrength(Number(event.target.value))} /></label>}
           {filter !== "stick" && <><label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
           <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label></>}
           <label className="toggle-row"><span>Mirror selfie</span><input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /></label>
