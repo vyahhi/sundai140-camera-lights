@@ -134,7 +134,7 @@ export default function Home() {
           </div>
         </div>
         <aside className="control-card">
-          <div className="pixel-panel"><div className="pixel-header"><span>BUILDING FEED</span><strong>9 × 17</strong></div><canvas ref={canvasRef} width={COLS} height={ROWS} aria-label="Nine by seventeen pixel preview" /></div>
+          <div className="pixel-panel"><div className="pixel-header"><span>BUILDING FEED</span><strong>17 rows × 9 columns</strong></div><canvas ref={canvasRef} width={COLS} height={ROWS} aria-label="Seventeen rows by nine columns pixel preview" /></div>
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
           <label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
           <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label>
