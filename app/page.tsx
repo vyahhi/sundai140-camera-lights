@@ -1,20 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { FaceLandmarker, FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
 
 const ROWS = 17;
 const COLS = 9;
 const WORK_SCALE = 8;
 type Status = "idle" | "starting" | "ready" | "live" | "error";
-type FilterId = "natural" | "portrait" | "caricature" | "neon" | "mono";
+type FilterId = "natural" | "portrait" | "caricature" | "stick" | "neon" | "mono";
 type FaceStatus = "off" | "loading" | "searching" | "locked" | "error";
-type Landmark = { x: number; y: number; z: number };
+type Landmark = { x: number; y: number; z: number; visibility?: number };
 type Crop = { x: number; y: number; width: number; height: number };
 const FILTERS: { id: FilterId; label: string }[] = [
   { id: "natural", label: "Natural" },
   { id: "portrait", label: "Portrait" },
   { id: "caricature", label: "Caricature" },
+  { id: "stick", label: "Stick Man" },
   { id: "neon", label: "Neon" },
   { id: "mono", label: "Mono" },
 ];
@@ -24,6 +25,11 @@ const LEFT_EYE = [33, 160, 158, 133, 153, 144];
 const RIGHT_EYE = [362, 385, 387, 263, 373, 380];
 const LEFT_BROW = [70, 63, 105, 66, 107];
 const RIGHT_BROW = [336, 296, 334, 293, 300];
+const STICK_CONNECTIONS: [number, number][] = [
+  [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+  [11, 23], [12, 24], [23, 24], [23, 25], [25, 27],
+  [24, 26], [26, 28], [27, 31], [28, 32],
+];
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
 
@@ -76,6 +82,106 @@ function faceCrop(landmarks: Landmark[], sourceRatio: number): Crop {
     width,
     height,
   };
+}
+
+function poseCrop(landmarks: Landmark[], sourceRatio: number): Crop {
+  const important = [0, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32]
+    .map((index) => landmarks[index])
+    .filter((point) => point && (point.visibility ?? 1) > .5 && point.x > -.08 && point.x < 1.08 && point.y > -.08 && point.y < 1.08);
+  if (important.length < 5) return { x: 0, y: 0, width: 1, height: 1 };
+  const minX = Math.min(...important.map((point) => point.x));
+  const maxX = Math.max(...important.map((point) => point.x));
+  const minY = Math.min(...important.map((point) => point.y));
+  const maxY = Math.max(...important.map((point) => point.y));
+  const targetRatio = COLS / ROWS;
+  const bodyHeight = Math.max(.25, maxY - minY);
+  const bodyWidth = Math.max(.12, (maxX - minX) * sourceRatio);
+  const height = Math.min(1, Math.max(bodyHeight * 1.2, bodyWidth / targetRatio * 1.12));
+  const width = Math.min(1, height * targetRatio / sourceRatio);
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  return {
+    x: Math.max(0, Math.min(1 - width, centerX - width / 2)),
+    y: Math.max(0, Math.min(1 - height, centerY - height / 2)),
+    width,
+    height,
+  };
+}
+
+function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean) {
+  const point = (index: number) => {
+    const landmark = landmarks[index];
+    let x = (landmark.x - crop.x) / crop.width * COLS;
+    if (mirror) x = COLS - x;
+    return {
+      x,
+      y: (landmark.y - crop.y) / crop.height * ROWS,
+      visible: (landmark.visibility ?? 1) > .42 && landmark.x > -.12 && landmark.x < 1.12 && landmark.y > -.12 && landmark.y < 1.12,
+    };
+  };
+  context.save();
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, COLS, ROWS);
+  context.strokeStyle = "#fff";
+  context.lineWidth = .9;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  const line = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.stroke();
+  };
+  for (const [fromIndex, toIndex] of STICK_CONNECTIONS) {
+    const from = point(fromIndex);
+    const to = point(toIndex);
+    if (!from.visible || !to.visible) continue;
+    line(from, to);
+  }
+  const nose = point(0);
+  const leftEar = point(7);
+  const rightEar = point(8);
+  const shoulders = [point(11), point(12)].filter((item) => item.visible);
+  const hips = [point(23), point(24)].filter((item) => item.visible);
+  const average = (points: { x: number; y: number }[]) => ({
+    x: points.reduce((sum, item) => sum + item.x, 0) / points.length,
+    y: points.reduce((sum, item) => sum + item.y, 0) / points.length,
+  });
+  const shoulderCenter = shoulders.length ? average(shoulders) : null;
+  const hipCenter = hips.length === 2 ? average(hips) : shoulderCenter ? { x: shoulderCenter.x, y: Math.min(ROWS - 3, shoulderCenter.y + 4.3) } : null;
+  if (shoulderCenter && hipCenter) {
+    line(shoulderCenter, hipCenter);
+    if (hips.length < 2) {
+      line(hipCenter, { x: hipCenter.x - 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) });
+      line(hipCenter, { x: hipCenter.x + 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) });
+    }
+    const leftShoulder = point(11);
+    const rightShoulder = point(12);
+    if (leftShoulder.visible && !point(13).visible) line(leftShoulder, { x: leftShoulder.x + Math.sign(leftShoulder.x - shoulderCenter.x || -1) * 1.6, y: Math.min(ROWS - 1, leftShoulder.y + 2.5) });
+    if (rightShoulder.visible && !point(14).visible) line(rightShoulder, { x: rightShoulder.x + Math.sign(rightShoulder.x - shoulderCenter.x || 1) * 1.6, y: Math.min(ROWS - 1, rightShoulder.y + 2.5) });
+  }
+  if (nose.visible) {
+    const earSpan = leftEar.visible && rightEar.visible ? Math.abs(rightEar.x - leftEar.x) : 1.5;
+    const radius = Math.max(.72, Math.min(1.25, earSpan * .62));
+    const neckY = shoulders.length ? Math.min(...shoulders.map((item) => item.y)) : nose.y + radius * 2.3;
+    const centerY = Math.min(neckY - radius - .15, nose.y);
+    const headX = Math.max(1, Math.min(COLS - 2, Math.round(nose.x - .5)));
+    const headY = Math.max(1, Math.min(ROWS - 2, Math.round(centerY - .5)));
+    context.fillRect(headX - 1, headY - 1, 3, 3);
+    context.clearRect(headX, headY, 1, 1);
+    if (shoulderCenter) line({ x: headX + .5, y: headY + 1.5 }, shoulderCenter);
+  }
+  context.restore();
+
+  const pixels = context.getImageData(0, 0, COLS, ROWS);
+  for (let index = 0; index < pixels.data.length; index += 4) {
+    const white = pixels.data[index] > 52 ? 255 : 0;
+    pixels.data[index] = white;
+    pixels.data[index + 1] = white;
+    pixels.data[index + 2] = white;
+    pixels.data[index + 3] = 255;
+  }
+  context.putImageData(pixels, 0, 0);
 }
 
 function applyCaricatureWarp(canvas: HTMLCanvasElement, landmarks: Landmark[], crop: Crop, mirror: boolean, strength: number) {
@@ -267,10 +373,13 @@ export default function Home() {
   const timerRef = useRef<number | null>(null);
   const sendingRef = useRef(false);
   const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
+  const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const landmarksRef = useRef<Landmark[] | null>(null);
+  const poseLandmarksRef = useRef<Landmark[] | null>(null);
   const lastDetectionRef = useRef(0);
   const lastFaceSeenRef = useRef(0);
   const cropRef = useRef<Crop | null>(null);
+  const poseCropRef = useRef<Crop | null>(null);
   const previousPixelsRef = useRef<Uint8ClampedArray | null>(null);
   const previousFilterRef = useRef<FilterId>("portrait");
   const [status, setStatus] = useState<Status>("idle");
@@ -281,6 +390,7 @@ export default function Home() {
   const [mirror, setMirror] = useState(true);
   const [filter, setFilter] = useState<FilterId>("portrait");
   const [faceStatus, setFaceStatus] = useState<FaceStatus>("off");
+  const [poseStatus, setPoseStatus] = useState<FaceStatus>("off");
   const [framesSent, setFramesSent] = useState(0);
 
   const stopLive = useCallback(() => {
@@ -346,6 +456,32 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [filter]);
 
+  useEffect(() => {
+    if (filter !== "stick") { setPoseStatus("off"); return; }
+    if (poseLandmarkerRef.current) { setPoseStatus(poseLandmarksRef.current ? "locked" : "searching"); return; }
+    let cancelled = false;
+    setPoseStatus("loading");
+    void (async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks("/mediapipe");
+        const landmarker = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: "/mediapipe/pose_landmarker_lite.task" },
+          runningMode: "VIDEO",
+          numPoses: 1,
+          minPoseDetectionConfidence: .45,
+          minPosePresenceConfidence: .45,
+          minTrackingConfidence: .45,
+        });
+        if (cancelled) { landmarker.close(); return; }
+        poseLandmarkerRef.current = landmarker;
+        setPoseStatus("searching");
+      } catch {
+        if (!cancelled) setPoseStatus("error");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [filter]);
+
   const makeFrame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -360,6 +496,7 @@ export default function Home() {
     const now = performance.now();
     const sourceRatio = video.videoWidth / video.videoHeight;
     const faceMode = filter === "portrait" || filter === "caricature";
+    const stickMode = filter === "stick";
     if (faceMode && faceLandmarkerRef.current && now - lastDetectionRef.current > 85) {
       lastDetectionRef.current = now;
       const result = faceLandmarkerRef.current.detectForVideo(video, now);
@@ -377,9 +514,42 @@ export default function Home() {
         setFaceStatus((current) => current === "searching" ? current : "searching");
       }
     }
+    if (stickMode && poseLandmarkerRef.current && now - lastDetectionRef.current > 85) {
+      lastDetectionRef.current = now;
+      const result = poseLandmarkerRef.current.detectForVideo(video, now);
+      const detected = result.landmarks[0] as Landmark[] | undefined;
+      if (detected) {
+        const previous = poseLandmarksRef.current;
+        poseLandmarksRef.current = previous?.length === detected.length
+          ? detected.map((bodyPoint, index) => ({
+              x: previous[index].x * .62 + bodyPoint.x * .38,
+              y: previous[index].y * .62 + bodyPoint.y * .38,
+              z: previous[index].z * .62 + bodyPoint.z * .38,
+              visibility: bodyPoint.visibility,
+            }))
+          : detected;
+        lastFaceSeenRef.current = now;
+        setPoseStatus((current) => current === "locked" ? current : "locked");
+      } else if (now - lastFaceSeenRef.current > 650) {
+        poseLandmarksRef.current = null;
+        poseCropRef.current = null;
+        setPoseStatus((current) => current === "searching" ? current : "searching");
+      }
+    }
     const landmarks = faceMode ? landmarksRef.current : null;
+    const poseLandmarks = stickMode ? poseLandmarksRef.current : null;
     let normalizedCrop: Crop;
-    if (landmarks) {
+    if (poseLandmarks) {
+      const next = poseCrop(poseLandmarks, sourceRatio);
+      const previous = poseCropRef.current;
+      normalizedCrop = previous ? {
+        x: previous.x * .82 + next.x * .18,
+        y: previous.y * .82 + next.y * .18,
+        width: previous.width * .82 + next.width * .18,
+        height: previous.height * .82 + next.height * .18,
+      } : next;
+      poseCropRef.current = normalizedCrop;
+    } else if (landmarks) {
       const next = faceCrop(landmarks, sourceRatio);
       const previous = cropRef.current;
       normalizedCrop = previous ? {
@@ -399,6 +569,19 @@ export default function Home() {
     const sy = normalizedCrop.y * video.videoHeight;
     const sw = normalizedCrop.width * video.videoWidth;
     const sh = normalizedCrop.height * video.videoHeight;
+    if (stickMode) {
+      context.clearRect(0, 0, COLS, ROWS);
+      context.fillStyle = "#000";
+      context.fillRect(0, 0, COLS, ROWS);
+      if (poseLandmarks) drawStickFigure(context, poseLandmarks, normalizedCrop, mirror);
+      const stickImage = context.getImageData(0, 0, COLS, ROWS);
+      previousPixelsRef.current = new Uint8ClampedArray(stickImage.data);
+      previousFilterRef.current = filter;
+      return Array.from({ length: ROWS }, (_, y) => Array.from({ length: COLS }, (_, x) => {
+        const index = (y * COLS + x) * 4;
+        return [stickImage.data[index], stickImage.data[index + 1], stickImage.data[index + 2]];
+      }));
+    }
     work.save();
     work.clearRect(0, 0, workCanvas.width, workCanvas.height);
     const modeContrast = faceMode ? 1 + (contrast - 1) * .72 : contrast;
@@ -484,6 +667,7 @@ export default function Home() {
     if (timerRef.current !== null) window.clearInterval(timerRef.current);
     streamRef.current?.getTracks().forEach((track) => track.stop());
     faceLandmarkerRef.current?.close();
+    poseLandmarkerRef.current?.close();
   }, []);
 
   return (
@@ -511,9 +695,10 @@ export default function Home() {
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
           <fieldset className="filter-control"><legend>Look</legend><div className="filter-buttons">{FILTERS.map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div></fieldset>
           {(filter === "portrait" || filter === "caricature") && <div className={`face-lock ${faceStatus}`}><span aria-hidden="true">◎</span><div><strong>{faceStatus === "loading" ? "Loading face detector" : faceStatus === "locked" ? filter === "caricature" ? "Caricature locked" : "Face locked" : faceStatus === "error" ? "Face model unavailable" : status === "idle" ? filter === "caricature" ? "Caricature ready" : "Portrait ready" : "Looking for a face"}</strong><small>{faceStatus === "locked" ? filter === "caricature" ? "Your distinctive features are exaggerated" : "Eyes and expression are enhanced" : faceStatus === "error" ? "Natural pixels are still available" : status === "idle" ? "Start the camera to find your features" : "Center your face inside the guide"}</small></div></div>}
+          {filter === "stick" && <div className={`face-lock ${poseStatus}`}><span aria-hidden="true">⌁</span><div><strong>{poseStatus === "loading" ? "Loading body tracker" : poseStatus === "locked" ? "Stick Man locked" : poseStatus === "error" ? "Body model unavailable" : status === "idle" ? "Stick Man ready" : "Looking for your body"}</strong><small>{poseStatus === "locked" ? "Move around — white sticks follow your pose" : poseStatus === "error" ? "Choose another look to continue" : status === "idle" ? "Step back so the camera can see your body" : "Keep your shoulders, arms, and hips in view"}</small></div></div>}
           {filter === "caricature" && <label><span>Exaggeration <b>{caricatureStrength.toFixed(2)}×</b></span><input type="range" min="0.5" max="1.8" step="0.05" value={caricatureStrength} onChange={(event) => setCaricatureStrength(Number(event.target.value))} /></label>}
-          <label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
-          <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label>
+          {filter !== "stick" && <><label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
+          <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label></>}
           <label className="toggle-row"><span>Mirror selfie</span><input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /></label>
           <div className="stats"><div><strong>{framesSent}</strong><span>frames sent</span></div><div><strong>4</strong><span>frames / sec</span></div></div>
           <p className="privacy">Video stays in your browser. Only 153 colored pixels are sent.</p>
