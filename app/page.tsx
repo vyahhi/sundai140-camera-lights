@@ -164,9 +164,9 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
   if (shoulderCenter || nose.visible) {
     const neckY = shoulders.length ? Math.min(...shoulders.map((item) => item.y)) : nose.y + 5;
     const headX = Math.max(2, Math.min(COLS - 3, Math.round((shoulderCenter?.x ?? nose.x) - .5)));
-    const headY = Math.max(2, Math.min(3, Math.round(neckY - 4.5)));
+    const headY = Math.max(2, Math.min(ROWS - 3, Math.round(neckY - 4.5)));
 
-    // Keep the original five-pixel face, anchored within one row of the top.
+    // A five-pixel-wide face survives at building scale: outline, two eyes, and a smile.
     context.clearRect(headX - 2, headY - 2, 5, 5);
     const cells = (x: number, y: number, width: number, height: number, color: string) => {
       context.fillStyle = color;
