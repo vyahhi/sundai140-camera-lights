@@ -1,5 +1,5 @@
 export const dynamic = "force-dynamic";
-const DISPLAY_URL = "https://sundai.willsarg.com/api/i/jolly-seal/frame";
+const DISPLAY_URL = process.env.DISPLAY_URL ?? "https://sundai.willsarg.com/api/i/jolly-seal/frame";
 const ROWS = 17, COLS = 9;
 function isChannel(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 255; }
 function isFrame(value: unknown): value is number[][][] {
