@@ -120,13 +120,13 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
   context.save();
   context.fillStyle = "#000";
   context.fillRect(0, 0, COLS, ROWS);
-  context.lineWidth = .9;
   context.lineCap = "round";
   context.lineJoin = "round";
-  const line = (from: { x: number; y: number }, to: { x: number; y: number }, start: string, end: string) => {
+  const line = (from: { x: number; y: number }, to: { x: number; y: number }, start: string, end: string, width = 1.05) => {
     const gradient = context.createLinearGradient(from.x, from.y, to.x, to.y);
     gradient.addColorStop(0, start);
     gradient.addColorStop(1, end);
+    context.lineWidth = width;
     context.strokeStyle = gradient;
     context.beginPath();
     context.moveTo(from.x, from.y);
@@ -151,10 +151,10 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
   const shoulderCenter = shoulders.length ? average(shoulders) : null;
   const hipCenter = hips.length === 2 ? average(hips) : shoulderCenter ? { x: shoulderCenter.x, y: Math.min(ROWS - 3, shoulderCenter.y + 4.3) } : null;
   if (shoulderCenter && hipCenter) {
-    line(shoulderCenter, hipCenter, "#8ffff2", "#168cff");
+    line(shoulderCenter, hipCenter, "#8ffff2", "#168cff", 2.6);
     if (hips.length < 2) {
-      line(hipCenter, { x: hipCenter.x - 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) }, "#52f6ff", "#1264ff");
-      line(hipCenter, { x: hipCenter.x + 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) }, "#d084ff", "#ff4ea3");
+      line(hipCenter, { x: hipCenter.x - 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) }, "#52f6ff", "#1264ff", 1.2);
+      line(hipCenter, { x: hipCenter.x + 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) }, "#d084ff", "#ff4ea3", 1.2);
     }
     const leftShoulder = point(11);
     const rightShoulder = point(12);
@@ -163,23 +163,25 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
   }
   if (shoulderCenter || nose.visible) {
     const neckY = shoulders.length ? Math.min(...shoulders.map((item) => item.y)) : nose.y + 5;
-    const headX = Math.max(2, Math.min(COLS - 3, Math.round((shoulderCenter?.x ?? nose.x) - .5)));
-    const headY = Math.max(2, Math.min(ROWS - 3, Math.round(neckY - 4.5)));
+    const headLeft = Math.max(0, Math.min(COLS - 7, Math.round((shoulderCenter?.x ?? nose.x) - 3.5)));
+    const headTop = Math.max(0, Math.min(1, Math.round(neckY - 6)));
 
-    // A five-pixel-wide face survives at building scale: outline, two eyes, and a smile.
-    context.clearRect(headX - 2, headY - 2, 5, 5);
+    // A nearly full-width, filled face keeps the person readable from the ground.
+    // Pinning its top to row zero or one avoids wasting the scarce vertical pixels.
+    context.clearRect(headLeft, headTop, 7, 6);
     const cells = (x: number, y: number, width: number, height: number, color: string) => {
       context.fillStyle = color;
       context.fillRect(x, y, width, height);
     };
-    cells(headX - 1, headY - 2, 3, 1, "#ffe36e");
-    cells(headX - 2, headY - 1, 1, 3, "#ffad42");
-    cells(headX + 2, headY - 1, 1, 3, "#ff7a45");
-    cells(headX - 1, headY, 1, 1, "#f5ffff");
-    cells(headX + 1, headY, 1, 1, "#f5ffff");
-    cells(headX, headY + 1, 1, 1, "#ff6577");
-    cells(headX - 1, headY + 2, 3, 1, "#ff8b5f");
-    if (shoulderCenter) line({ x: headX + .5, y: headY + 2.5 }, shoulderCenter, "#ffad42", "#8ffff2");
+    cells(headLeft + 1, headTop, 5, 1, "#ffe36e");
+    cells(headLeft, headTop + 1, 7, 2, "#ffbd54");
+    cells(headLeft, headTop + 3, 7, 2, "#ff9854");
+    cells(headLeft + 1, headTop + 5, 5, 1, "#ff755d");
+    cells(headLeft + 1, headTop + 2, 1, 1, "#f5ffff");
+    cells(headLeft + 5, headTop + 2, 1, 1, "#f5ffff");
+    cells(headLeft + 3, headTop + 3, 1, 1, "#ff4f78");
+    cells(headLeft + 2, headTop + 4, 3, 1, "#45172d");
+    if (shoulderCenter) line({ x: headLeft + 3.5, y: headTop + 5.5 }, shoulderCenter, "#ffad42", "#8ffff2", 1.5);
   }
   context.restore();
 
