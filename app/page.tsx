@@ -57,22 +57,22 @@ function meanPoint(landmarks: Landmark[], indexes: number[]) {
   return { x: total.x / indexes.length, y: total.y / indexes.length };
 }
 
-function faceCrop(landmarks: Landmark[]): Crop {
-  let minX = 1, minY = 1, maxX = 0, maxY = 0;
-  for (const point of landmarks) {
-    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y);
-    maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
-  }
-  const faceWidth = maxX - minX;
-  const faceHeight = maxY - minY;
-  let height = Math.min(1, Math.max(faceHeight * 1.62, faceWidth / (COLS / ROWS) * 1.08));
-  let width = height * COLS / ROWS;
-  if (width > 1) { width = 1; height = ROWS / COLS; }
-  const centerX = (minX + maxX) / 2;
-  const centerY = minY + faceHeight * .58;
+function faceCrop(landmarks: Landmark[], sourceRatio: number): Crop {
+  const forehead = landmarks[10];
+  const chin = landmarks[152];
+  const templeA = landmarks[234];
+  const templeB = landmarks[454];
+  const distance = (a: Landmark, b: Landmark) => Math.hypot((a.x - b.x) * sourceRatio, a.y - b.y);
+  const faceHeight = distance(forehead, chin);
+  const faceWidth = distance(templeA, templeB);
+  const targetRatio = COLS / ROWS;
+  const height = Math.min(1, Math.max(faceHeight * 1.48, faceWidth / targetRatio * 1.22));
+  const width = Math.min(1, height * targetRatio / sourceRatio);
+  const centerX = (templeA.x + templeB.x) / 2;
+  const centerY = forehead.y + (chin.y - forehead.y) * .56;
   return {
     x: Math.max(0, Math.min(1 - width, centerX - width / 2)),
-    y: Math.max(0, Math.min(1 - height, centerY - height * .43)),
+    y: Math.max(0, Math.min(1 - height, centerY - height * .45)),
     width,
     height,
   };
@@ -100,7 +100,7 @@ function applyCaricatureWarp(canvas: HTMLCanvasElement, landmarks: Landmark[], c
   const faceRy = Math.max(12, Math.abs(chin.y - forehead.y) / 2);
   const eyeRadius = Math.max(4, Math.abs(rightEye.x - leftEye.x) * .29);
   const mouthRadius = Math.max(5, Math.abs(mouthRight.x - mouthLeft.x) * .72);
-  const amount = Math.max(.5, Math.min(2.5, strength));
+  const amount = Math.max(0, Math.min(1, (strength - .5) / 1.3));
   const source = context.getImageData(0, 0, canvas.width, canvas.height);
   const output = context.createImageData(canvas.width, canvas.height);
 
@@ -119,11 +119,11 @@ function applyCaricatureWarp(canvas: HTMLCanvasElement, landmarks: Landmark[], c
     const faceDistance = ((x - center.x) / faceRx) ** 2 + ((y - center.y) / faceRy) ** 2;
     if (faceDistance < 1.35) {
       const vertical = Math.max(0, Math.min(1, (y - center.y) / faceRy));
-      sample.x = center.x + (sample.x - center.x) * (1 - .1 * amount * (.35 + vertical * .65) * (1 - faceDistance / 1.35));
+      sample.x = center.x + (sample.x - center.x) * (1 - .06 * amount * (.35 + vertical * .65) * (1 - faceDistance / 1.35));
     }
-    magnify(sample, leftEye, eyeRadius * 1.45, eyeRadius, .2 * amount);
-    magnify(sample, rightEye, eyeRadius * 1.45, eyeRadius, .2 * amount);
-    magnify(sample, mouth, mouthRadius * 1.35, mouthRadius * .82, .13 * amount);
+    magnify(sample, leftEye, eyeRadius * 1.45, eyeRadius, .12 * amount);
+    magnify(sample, rightEye, eyeRadius * 1.45, eyeRadius, .12 * amount);
+    magnify(sample, mouth, mouthRadius * 1.35, mouthRadius * .82, .08 * amount);
     const sx = Math.max(0, Math.min(canvas.width - 1, Math.round(sample.x)));
     const sy = Math.max(0, Math.min(canvas.height - 1, Math.round(sample.y)));
     const from = (sy * canvas.width + sx) * 4;
@@ -136,20 +136,59 @@ function applyCaricatureWarp(canvas: HTMLCanvasElement, landmarks: Landmark[], c
   context.putImageData(output, 0, 0);
 }
 
-function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean, caricature = false, strength = 1) {
-  const cell = (point: Landmark | { x: number; y: number }) => {
+function faceRotation(landmarks: Landmark[], crop: Crop, mirror: boolean, width: number, height: number) {
+  const map = (point: Landmark | { x: number; y: number }) => {
+    let x = (point.x - crop.x) / crop.width * width;
+    if (mirror) x = width - x;
+    return { x, y: (point.y - crop.y) / crop.height * height };
+  };
+  const eyeA = map(meanPoint(landmarks, LEFT_EYE));
+  const eyeB = map(meanPoint(landmarks, RIGHT_EYE));
+  const left = eyeA.x <= eyeB.x ? eyeA : eyeB;
+  const right = eyeA.x <= eyeB.x ? eyeB : eyeA;
+  const center = map(meanPoint(landmarks, FACE_OVAL));
+  const angle = Math.max(-.58, Math.min(.58, Math.atan2(right.y - left.y, right.x - left.x)));
+  return { angle, center };
+}
+
+function straightenFace(canvas: HTMLCanvasElement, scratch: HTMLCanvasElement, landmarks: Landmark[], crop: Crop, mirror: boolean) {
+  const { angle, center } = faceRotation(landmarks, crop, mirror, canvas.width, canvas.height);
+  if (Math.abs(angle) < .025) return 0;
+  scratch.width = canvas.width;
+  scratch.height = canvas.height;
+  const scratchContext = scratch.getContext("2d");
+  const context = canvas.getContext("2d");
+  if (!scratchContext || !context) return 0;
+  scratchContext.clearRect(0, 0, scratch.width, scratch.height);
+  scratchContext.drawImage(canvas, 0, 0);
+  context.save();
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.translate(center.x, center.y);
+  context.rotate(-angle);
+  context.translate(-center.x, -center.y);
+  context.drawImage(scratch, 0, 0);
+  context.restore();
+  return angle;
+}
+
+function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean, caricature = false, strength = 1, rotation = 0) {
+  const rawCell = (point: Landmark | { x: number; y: number }) => {
     let x = (point.x - crop.x) / crop.width * COLS;
     if (mirror) x = COLS - x;
-    return { x: Math.max(0, Math.min(COLS - 1, Math.round(x - .5))), y: Math.max(0, Math.min(ROWS - 1, Math.round((point.y - crop.y) / crop.height * ROWS - .5))) };
+    return { x, y: (point.y - crop.y) / crop.height * ROWS };
   };
-  const paint = (x: number, y: number, color: string, alpha = 1) => {
-    context.globalAlpha = alpha;
-    context.fillStyle = color;
-    context.fillRect(x, y, 1, 1);
-    context.globalAlpha = 1;
+  const rotationCenter = rawCell(meanPoint(landmarks, FACE_OVAL));
+  const cell = (point: Landmark | { x: number; y: number }) => {
+    const raw = rawCell(point);
+    const dx = raw.x - rotationCenter.x;
+    const dy = raw.y - rotationCenter.y;
+    const cosine = Math.cos(-rotation);
+    const sine = Math.sin(-rotation);
+    const x = rotationCenter.x + dx * cosine - dy * sine;
+    const y = rotationCenter.y + dx * sine + dy * cosine;
+    return { x: Math.max(0, Math.min(COLS - 1, Math.round(x - .5))), y: Math.max(0, Math.min(ROWS - 1, Math.round(y - .5))) };
   };
-
-  // Quiet the background so the head silhouette reads before its details.
+  // Separate the face gently while keeping the camera's real color palette.
   const faceCenter = cell(meanPoint(landmarks, FACE_OVAL));
   const templeA = cell(landmarks[234]);
   const templeB = cell(landmarks[454]);
@@ -162,60 +201,68 @@ function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Land
     const outside = ((x - faceCenter.x) / rx) ** 2 + ((y - faceCenter.y) / ry) ** 2 > 1.28;
     const index = (y * COLS + x) * 4;
     if (outside) {
-      pixels.data[index] = clamp(pixels.data[index] * .24);
-      pixels.data[index + 1] = clamp(pixels.data[index + 1] * .28);
-      pixels.data[index + 2] = clamp(pixels.data[index + 2] * .34);
+      pixels.data[index] = clamp(pixels.data[index] * .52);
+      pixels.data[index + 1] = clamp(pixels.data[index + 1] * .56);
+      pixels.data[index + 2] = clamp(pixels.data[index + 2] * .6);
     } else {
-      pixels.data[index] = clamp(Math.round(pixels.data[index] / 42) * 42);
-      pixels.data[index + 1] = clamp(Math.round(pixels.data[index + 1] / 42) * 42);
-      pixels.data[index + 2] = clamp(Math.round(pixels.data[index + 2] / 42) * 42);
+      pixels.data[index] = clamp(Math.round(pixels.data[index] / 28) * 28);
+      pixels.data[index + 1] = clamp(Math.round(pixels.data[index + 1] / 28) * 28);
+      pixels.data[index + 2] = clamp(Math.round(pixels.data[index + 2] / 28) * 28);
     }
   }
-  context.putImageData(pixels, 0, 0);
+  const blendCell = (x: number, y: number, target: [number, number, number], amount: number) => {
+    x = Math.max(0, Math.min(COLS - 1, x));
+    y = Math.max(0, Math.min(ROWS - 1, y));
+    const index = (y * COLS + x) * 4;
+    pixels.data[index] = clamp(pixels.data[index] * (1 - amount) + target[0] * amount);
+    pixels.data[index + 1] = clamp(pixels.data[index + 1] * (1 - amount) + target[1] * amount);
+    pixels.data[index + 2] = clamp(pixels.data[index + 2] * (1 - amount) + target[2] * amount);
+  };
 
-  // Sparse contours preserve the face at a resolution where ordinary edges vanish.
-  for (let index = 0; index < FACE_OVAL.length; index += 3) {
+  // Caricature keeps only a whisper of contour; hard outlines looked mask-like.
+  if (caricature) for (let index = 0; index < FACE_OVAL.length; index += 6) {
     const original = cell(landmarks[FACE_OVAL[index]]);
-    const expansion = caricature ? 1 + .1 * strength : 1;
-    const point = {
-      x: Math.max(0, Math.min(COLS - 1, Math.round(faceCenter.x + (original.x - faceCenter.x) * expansion))),
-      y: Math.max(0, Math.min(ROWS - 1, Math.round(faceCenter.y + (original.y - faceCenter.y) * (caricature ? 1.04 : 1)))),
-    };
-    paint(point.x, point.y, caricature ? "#112630" : "#08151b", .86);
+    const expansion = 1 + .035 * strength;
+    blendCell(
+      Math.round(faceCenter.x + (original.x - faceCenter.x) * expansion),
+      Math.round(faceCenter.y + (original.y - faceCenter.y) * 1.02),
+      [24, 31, 32],
+      .2,
+    );
   }
   const leftEye = cell(meanPoint(landmarks, LEFT_EYE));
   const rightEye = cell(meanPoint(landmarks, RIGHT_EYE));
   const leftEyeOpen = Math.abs(landmarks[159].y - landmarks[145].y) / Math.max(.001, Math.abs(landmarks[133].x - landmarks[33].x));
   const rightEyeOpen = Math.abs(landmarks[386].y - landmarks[374].y) / Math.max(.001, Math.abs(landmarks[263].x - landmarks[362].x));
-  paint(leftEye.x, leftEye.y, leftEyeOpen > .075 ? "#eafff5" : "#183037");
-  paint(rightEye.x, rightEye.y, rightEyeOpen > .075 ? "#eafff5" : "#183037");
-  if (caricature) {
-    paint(Math.max(0, leftEye.x + Math.sign(leftEye.x - faceCenter.x)), leftEye.y, leftEyeOpen > .075 ? "#8dffe8" : "#183037", .92);
-    paint(Math.min(COLS - 1, rightEye.x + Math.sign(rightEye.x - faceCenter.x)), rightEye.y, rightEyeOpen > .075 ? "#8dffe8" : "#183037", .92);
-  }
+  const eyeTone: [number, number, number] = [214, 220, 205];
+  const closedEye: [number, number, number] = [42, 45, 43];
+  blendCell(leftEye.x, leftEye.y, leftEyeOpen > .075 ? eyeTone : closedEye, caricature ? .42 : .3);
+  blendCell(rightEye.x, rightEye.y, rightEyeOpen > .075 ? eyeTone : closedEye, caricature ? .42 : .3);
   const leftBrow = cell(meanPoint(landmarks, LEFT_BROW));
   const rightBrow = cell(meanPoint(landmarks, RIGHT_BROW));
-  paint(leftBrow.x, Math.min(leftEye.y - 1, leftBrow.y), "#102026", .95);
-  paint(rightBrow.x, Math.min(rightEye.y - 1, rightBrow.y), "#102026", .95);
+  blendCell(leftBrow.x, Math.min(leftEye.y - 1, leftBrow.y), [35, 32, 29], .38);
+  blendCell(rightBrow.x, Math.min(rightEye.y - 1, rightBrow.y), [35, 32, 29], .38);
 
   const nose = cell(landmarks[1]);
-  paint(nose.x, nose.y, "#ffbe72", .78);
+  blendCell(nose.x, nose.y, [205, 157, 116], .14);
   const mouthLeft = cell(landmarks[61]);
   const mouthRight = cell(landmarks[291]);
   const mouthCenter = cell(meanPoint(landmarks, [13, 14, 0, 17]));
   const mouthMin = Math.min(mouthLeft.x, mouthRight.x);
   const mouthMax = Math.max(mouthLeft.x, mouthRight.x);
-  const mouthWidth = Math.max(1, Math.min(caricature ? 4 : 3, mouthMax - mouthMin + 1 + (caricature ? Math.round(strength * .6) : 0)));
+  const mouthWidth = Math.max(1, Math.min(caricature ? 3 : 2, mouthMax - mouthMin + (caricature && strength > 1.15 ? 1 : 0)));
   const startX = Math.max(0, Math.min(COLS - mouthWidth, mouthCenter.x - Math.floor(mouthWidth / 2)));
-  for (let x = startX; x < startX + mouthWidth; x++) paint(x, mouthCenter.y, "#ff5c88");
+  for (let x = startX; x < startX + mouthWidth; x++) blendCell(x, mouthCenter.y, [132, 58, 62], caricature ? .52 : .4);
   const mouthOpen = Math.abs(landmarks[13].y - landmarks[14].y) / Math.max(.001, Math.abs(landmarks[291].x - landmarks[61].x));
-  if (mouthOpen > .09 && mouthCenter.y < ROWS - 1) paint(mouthCenter.x, mouthCenter.y + 1, "#5a103a");
+  if (mouthOpen > .09 && mouthCenter.y < ROWS - 1) blendCell(mouthCenter.x, mouthCenter.y + 1, [28, 20, 23], .62);
+  context.putImageData(pixels, 0, 0);
 }
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const workCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rotationCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const sendingRef = useRef(false);
@@ -224,11 +271,13 @@ export default function Home() {
   const lastDetectionRef = useRef(0);
   const lastFaceSeenRef = useRef(0);
   const cropRef = useRef<Crop | null>(null);
+  const previousPixelsRef = useRef<Uint8ClampedArray | null>(null);
+  const previousFilterRef = useRef<FilterId>("portrait");
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("Camera is off");
   const [brightness, setBrightness] = useState(1.15);
   const [contrast, setContrast] = useState(1.35);
-  const [caricatureStrength, setCaricatureStrength] = useState(1.35);
+  const [caricatureStrength, setCaricatureStrength] = useState(1);
   const [mirror, setMirror] = useState(true);
   const [filter, setFilter] = useState<FilterId>("portrait");
   const [faceStatus, setFaceStatus] = useState<FaceStatus>("off");
@@ -309,6 +358,7 @@ export default function Home() {
     const work = workCanvas.getContext("2d", { willReadFrequently: true });
     if (!context || !work) return null;
     const now = performance.now();
+    const sourceRatio = video.videoWidth / video.videoHeight;
     const faceMode = filter === "portrait" || filter === "caricature";
     if (faceMode && faceLandmarkerRef.current && now - lastDetectionRef.current > 85) {
       lastDetectionRef.current = now;
@@ -330,7 +380,7 @@ export default function Home() {
     const landmarks = faceMode ? landmarksRef.current : null;
     let normalizedCrop: Crop;
     if (landmarks) {
-      const next = faceCrop(landmarks);
+      const next = faceCrop(landmarks, sourceRatio);
       const previous = cropRef.current;
       normalizedCrop = previous ? {
         x: previous.x * .78 + next.x * .22,
@@ -341,7 +391,6 @@ export default function Home() {
       cropRef.current = normalizedCrop;
     } else {
       const targetRatio = COLS / ROWS;
-      const sourceRatio = video.videoWidth / video.videoHeight;
       normalizedCrop = sourceRatio > targetRatio
         ? { x: (1 - targetRatio / sourceRatio) / 2, y: 0, width: targetRatio / sourceRatio, height: 1 }
         : { x: 0, y: (1 - sourceRatio / targetRatio) / 2, width: 1, height: sourceRatio / targetRatio };
@@ -352,11 +401,19 @@ export default function Home() {
     const sh = normalizedCrop.height * video.videoHeight;
     work.save();
     work.clearRect(0, 0, workCanvas.width, workCanvas.height);
-    work.filter = `brightness(${brightness}) contrast(${contrast}) saturate(1.2)`;
+    const modeContrast = faceMode ? 1 + (contrast - 1) * .72 : contrast;
+    const modeBrightness = faceMode ? brightness * .97 : brightness;
+    work.filter = `brightness(${modeBrightness}) contrast(${modeContrast}) saturate(${faceMode ? 1.04 : 1.2})`;
     if (mirror) { work.translate(workCanvas.width, 0); work.scale(-1, 1); }
     work.drawImage(video, sx, sy, sw, sh, 0, 0, workCanvas.width, workCanvas.height);
     work.restore();
     if (filter === "caricature" && landmarks) applyCaricatureWarp(workCanvas, landmarks, normalizedCrop, mirror, caricatureStrength);
+    let rotation = 0;
+    if (faceMode && landmarks) {
+      const rotationCanvas = rotationCanvasRef.current ?? document.createElement("canvas");
+      rotationCanvasRef.current = rotationCanvas;
+      rotation = straightenFace(workCanvas, rotationCanvas, landmarks, normalizedCrop, mirror);
+    }
     if (filter !== "natural") {
       const processed = work.getImageData(0, 0, workCanvas.width, workCanvas.height);
       applyFilter(processed, filter);
@@ -366,8 +423,20 @@ export default function Home() {
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
     context.drawImage(workCanvas, 0, 0, COLS, ROWS);
-    if (faceMode && landmarks) drawSemanticPortrait(context, landmarks, normalizedCrop, mirror, filter === "caricature", caricatureStrength);
-    const data = context.getImageData(0, 0, COLS, ROWS).data;
+    if (faceMode && landmarks) drawSemanticPortrait(context, landmarks, normalizedCrop, mirror, filter === "caricature", caricatureStrength, rotation);
+    const finalImage = context.getImageData(0, 0, COLS, ROWS);
+    const previous = previousFilterRef.current === filter ? previousPixelsRef.current : null;
+    if (faceMode && previous?.length === finalImage.data.length) {
+      for (let index = 0; index < finalImage.data.length; index += 4) {
+        finalImage.data[index] = clamp(finalImage.data[index] * .78 + previous[index] * .22);
+        finalImage.data[index + 1] = clamp(finalImage.data[index + 1] * .78 + previous[index + 1] * .22);
+        finalImage.data[index + 2] = clamp(finalImage.data[index + 2] * .78 + previous[index + 2] * .22);
+      }
+      context.putImageData(finalImage, 0, 0);
+    }
+    previousPixelsRef.current = new Uint8ClampedArray(finalImage.data);
+    previousFilterRef.current = filter;
+    const data = finalImage.data;
     return Array.from({ length: ROWS }, (_, y) => Array.from({ length: COLS }, (_, x) => {
       const index = (y * COLS + x) * 4;
       return [data[index], data[index + 1], data[index + 2]];
@@ -442,7 +511,7 @@ export default function Home() {
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
           <fieldset className="filter-control"><legend>Look</legend><div className="filter-buttons">{FILTERS.map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div></fieldset>
           {(filter === "portrait" || filter === "caricature") && <div className={`face-lock ${faceStatus}`}><span aria-hidden="true">◎</span><div><strong>{faceStatus === "loading" ? "Loading face detector" : faceStatus === "locked" ? filter === "caricature" ? "Caricature locked" : "Face locked" : faceStatus === "error" ? "Face model unavailable" : status === "idle" ? filter === "caricature" ? "Caricature ready" : "Portrait ready" : "Looking for a face"}</strong><small>{faceStatus === "locked" ? filter === "caricature" ? "Your distinctive features are exaggerated" : "Eyes and expression are enhanced" : faceStatus === "error" ? "Natural pixels are still available" : status === "idle" ? "Start the camera to find your features" : "Center your face inside the guide"}</small></div></div>}
-          {filter === "caricature" && <label><span>Exaggeration <b>{caricatureStrength.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={caricatureStrength} onChange={(event) => setCaricatureStrength(Number(event.target.value))} /></label>}
+          {filter === "caricature" && <label><span>Exaggeration <b>{caricatureStrength.toFixed(2)}×</b></span><input type="range" min="0.5" max="1.8" step="0.05" value={caricatureStrength} onChange={(event) => setCaricatureStrength(Number(event.target.value))} /></label>}
           <label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
           <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label>
           <label className="toggle-row"><span>Mirror selfie</span><input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /></label>
