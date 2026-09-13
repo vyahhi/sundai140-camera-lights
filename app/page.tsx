@@ -25,10 +25,12 @@ const LEFT_EYE = [33, 160, 158, 133, 153, 144];
 const RIGHT_EYE = [362, 385, 387, 263, 373, 380];
 const LEFT_BROW = [70, 63, 105, 66, 107];
 const RIGHT_BROW = [336, 296, 334, 293, 300];
-const STICK_CONNECTIONS: [number, number][] = [
-  [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
-  [11, 23], [12, 24], [23, 24], [23, 25], [25, 27],
-  [24, 26], [26, 28], [27, 31], [28, 32],
+const STICK_PARTS: { connections: [number, number][]; start: string; end: string }[] = [
+  { connections: [[11, 12], [11, 23], [12, 24], [23, 24]], start: "#8ffff2", end: "#168cff" },
+  { connections: [[11, 13], [13, 15]], start: "#ff77d5", end: "#8f55ff" },
+  { connections: [[12, 14], [14, 16]], start: "#ffe36e", end: "#ff693d" },
+  { connections: [[23, 25], [25, 27], [27, 31]], start: "#52f6ff", end: "#1264ff" },
+  { connections: [[24, 26], [26, 28], [28, 32]], start: "#d084ff", end: "#ff4ea3" },
 ];
 
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
@@ -146,21 +148,26 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
   context.save();
   context.fillStyle = "#000";
   context.fillRect(0, 0, COLS, ROWS);
-  context.strokeStyle = "#fff";
   context.lineWidth = .9;
   context.lineCap = "round";
   context.lineJoin = "round";
-  const line = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+  const line = (from: { x: number; y: number }, to: { x: number; y: number }, start: string, end: string) => {
+    const gradient = context.createLinearGradient(from.x, from.y, to.x, to.y);
+    gradient.addColorStop(0, start);
+    gradient.addColorStop(1, end);
+    context.strokeStyle = gradient;
     context.beginPath();
     context.moveTo(from.x, from.y);
     context.lineTo(to.x, to.y);
     context.stroke();
   };
-  for (const [fromIndex, toIndex] of STICK_CONNECTIONS) {
-    const from = point(fromIndex);
-    const to = point(toIndex);
-    if (!from.visible || !to.visible) continue;
-    line(from, to);
+  for (const part of STICK_PARTS) {
+    for (const [fromIndex, toIndex] of part.connections) {
+      const from = point(fromIndex);
+      const to = point(toIndex);
+      if (!from.visible || !to.visible) continue;
+      line(from, to, part.start, part.end);
+    }
   }
   const nose = point(0);
   const shoulders = [point(11), point(12)].filter((item) => item.visible);
@@ -172,15 +179,15 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
   const shoulderCenter = shoulders.length ? average(shoulders) : null;
   const hipCenter = hips.length === 2 ? average(hips) : shoulderCenter ? { x: shoulderCenter.x, y: Math.min(ROWS - 3, shoulderCenter.y + 4.3) } : null;
   if (shoulderCenter && hipCenter) {
-    line(shoulderCenter, hipCenter);
+    line(shoulderCenter, hipCenter, "#8ffff2", "#168cff");
     if (hips.length < 2) {
-      line(hipCenter, { x: hipCenter.x - 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) });
-      line(hipCenter, { x: hipCenter.x + 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) });
+      line(hipCenter, { x: hipCenter.x - 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) }, "#52f6ff", "#1264ff");
+      line(hipCenter, { x: hipCenter.x + 1.35, y: Math.min(ROWS - .5, hipCenter.y + 3.6) }, "#d084ff", "#ff4ea3");
     }
     const leftShoulder = point(11);
     const rightShoulder = point(12);
-    if (leftShoulder.visible && !point(13).visible) line(leftShoulder, { x: leftShoulder.x + Math.sign(leftShoulder.x - shoulderCenter.x || -1) * 1.6, y: Math.min(ROWS - 1, leftShoulder.y + 2.5) });
-    if (rightShoulder.visible && !point(14).visible) line(rightShoulder, { x: rightShoulder.x + Math.sign(rightShoulder.x - shoulderCenter.x || 1) * 1.6, y: Math.min(ROWS - 1, rightShoulder.y + 2.5) });
+    if (leftShoulder.visible && !point(13).visible) line(leftShoulder, { x: leftShoulder.x + Math.sign(leftShoulder.x - shoulderCenter.x || -1) * 1.6, y: Math.min(ROWS - 1, leftShoulder.y + 2.5) }, "#ff77d5", "#8f55ff");
+    if (rightShoulder.visible && !point(14).visible) line(rightShoulder, { x: rightShoulder.x + Math.sign(rightShoulder.x - shoulderCenter.x || 1) * 1.6, y: Math.min(ROWS - 1, rightShoulder.y + 2.5) }, "#ffe36e", "#ff693d");
   }
   if (shoulderCenter || nose.visible) {
     const neckY = shoulders.length ? Math.min(...shoulders.map((item) => item.y)) : nose.y + 5;
@@ -189,24 +196,33 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
 
     // A five-pixel-wide face survives at building scale: outline, two eyes, and a smile.
     context.clearRect(headX - 2, headY - 2, 5, 5);
-    context.fillStyle = "#fff";
-    context.fillRect(headX - 1, headY - 2, 3, 1);
-    context.fillRect(headX - 2, headY - 1, 1, 3);
-    context.fillRect(headX + 2, headY - 1, 1, 3);
-    context.fillRect(headX - 1, headY, 1, 1);
-    context.fillRect(headX + 1, headY, 1, 1);
-    context.fillRect(headX, headY + 1, 1, 1);
-    context.fillRect(headX - 1, headY + 2, 3, 1);
-    if (shoulderCenter) line({ x: headX + .5, y: headY + 2.5 }, shoulderCenter);
+    const cells = (x: number, y: number, width: number, height: number, color: string) => {
+      context.fillStyle = color;
+      context.fillRect(x, y, width, height);
+    };
+    cells(headX - 1, headY - 2, 3, 1, "#ffe36e");
+    cells(headX - 2, headY - 1, 1, 3, "#ffad42");
+    cells(headX + 2, headY - 1, 1, 3, "#ff7a45");
+    cells(headX - 1, headY, 1, 1, "#f5ffff");
+    cells(headX + 1, headY, 1, 1, "#f5ffff");
+    cells(headX, headY + 1, 1, 1, "#ff6577");
+    cells(headX - 1, headY + 2, 3, 1, "#ff8b5f");
+    if (shoulderCenter) line({ x: headX + .5, y: headY + 2.5 }, shoulderCenter, "#ffad42", "#8ffff2");
   }
   context.restore();
 
   const pixels = context.getImageData(0, 0, COLS, ROWS);
   for (let index = 0; index < pixels.data.length; index += 4) {
-    const white = pixels.data[index] > 52 ? 255 : 0;
-    pixels.data[index] = white;
-    pixels.data[index + 1] = white;
-    pixels.data[index + 2] = white;
+    const maximum = Math.max(pixels.data[index], pixels.data[index + 1], pixels.data[index + 2]);
+    if (maximum < 34) {
+      pixels.data[index] = 0;
+      pixels.data[index + 1] = 0;
+      pixels.data[index + 2] = 0;
+    } else {
+      pixels.data[index] = clamp(pixels.data[index] * 1.18);
+      pixels.data[index + 1] = clamp(pixels.data[index + 1] * 1.18);
+      pixels.data[index + 2] = clamp(pixels.data[index + 2] * 1.18);
+    }
     pixels.data[index + 3] = 255;
   }
   context.putImageData(pixels, 0, 0);
@@ -738,7 +754,7 @@ export default function Home() {
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
           <fieldset className="filter-control"><legend>Look</legend><div className="filter-buttons">{FILTERS.map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div></fieldset>
           {(filter === "portrait" || filter === "caricature") && <div className={`face-lock ${faceStatus}`}><span aria-hidden="true">◎</span><div><strong>{faceStatus === "loading" ? "Loading face detector" : faceStatus === "locked" ? filter === "caricature" ? "Caricature locked" : "Face locked" : faceStatus === "error" ? "Face model unavailable" : status === "idle" ? filter === "caricature" ? "Caricature ready" : "Portrait ready" : "Looking for a face"}</strong><small>{faceStatus === "locked" ? filter === "caricature" ? "Your distinctive features are exaggerated" : "Eyes and expression are enhanced" : faceStatus === "error" ? "Natural pixels are still available" : status === "idle" ? "Start the camera to find your features" : "Center your face inside the guide"}</small></div></div>}
-          {filter === "stick" && <div className={`face-lock ${poseStatus}`}><span aria-hidden="true">⌁</span><div><strong>{poseStatus === "loading" ? "Loading body tracker" : poseStatus === "locked" ? "Stick Man locked" : poseStatus === "error" ? "Body model unavailable" : status === "idle" ? "Stick Man ready" : "No clear person — screen is black"}</strong><small>{poseStatus === "locked" ? "Move around — white sticks follow your pose" : poseStatus === "error" ? "Choose another look to continue" : status === "idle" ? "Start with your head and shoulders in view" : "Show your face, both shoulders, and part of your arms"}</small></div></div>}
+          {filter === "stick" && <div className={`face-lock ${poseStatus}`}><span aria-hidden="true">⌁</span><div><strong>{poseStatus === "loading" ? "Loading body tracker" : poseStatus === "locked" ? "Stick Man locked" : poseStatus === "error" ? "Body model unavailable" : status === "idle" ? "Stick Man ready" : "No clear person — screen is black"}</strong><small>{poseStatus === "locked" ? "Move around — color-coded limbs follow your pose" : poseStatus === "error" ? "Choose another look to continue" : status === "idle" ? "Start with your head and shoulders in view" : "Show your face, both shoulders, and part of your arms"}</small></div></div>}
           {filter === "caricature" && <label><span>Exaggeration <b>{caricatureStrength.toFixed(2)}×</b></span><input type="range" min="0.5" max="1.8" step="0.05" value={caricatureStrength} onChange={(event) => setCaricatureStrength(Number(event.target.value))} /></label>}
           {filter !== "stick" && <><label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
           <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label></>}
