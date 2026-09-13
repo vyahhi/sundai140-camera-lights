@@ -139,8 +139,6 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
     line(from, to);
   }
   const nose = point(0);
-  const leftEar = point(7);
-  const rightEar = point(8);
   const shoulders = [point(11), point(12)].filter((item) => item.visible);
   const hips = [point(23), point(24)].filter((item) => item.visible);
   const average = (points: { x: number; y: number }[]) => ({
@@ -160,16 +158,22 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
     if (leftShoulder.visible && !point(13).visible) line(leftShoulder, { x: leftShoulder.x + Math.sign(leftShoulder.x - shoulderCenter.x || -1) * 1.6, y: Math.min(ROWS - 1, leftShoulder.y + 2.5) });
     if (rightShoulder.visible && !point(14).visible) line(rightShoulder, { x: rightShoulder.x + Math.sign(rightShoulder.x - shoulderCenter.x || 1) * 1.6, y: Math.min(ROWS - 1, rightShoulder.y + 2.5) });
   }
-  if (nose.visible) {
-    const earSpan = leftEar.visible && rightEar.visible ? Math.abs(rightEar.x - leftEar.x) : 1.5;
-    const radius = Math.max(.72, Math.min(1.25, earSpan * .62));
-    const neckY = shoulders.length ? Math.min(...shoulders.map((item) => item.y)) : nose.y + radius * 2.3;
-    const centerY = Math.min(neckY - radius - .15, nose.y);
-    const headX = Math.max(1, Math.min(COLS - 2, Math.round(nose.x - .5)));
-    const headY = Math.max(1, Math.min(ROWS - 2, Math.round(centerY - .5)));
-    context.fillRect(headX - 1, headY - 1, 3, 3);
-    context.clearRect(headX, headY, 1, 1);
-    if (shoulderCenter) line({ x: headX + .5, y: headY + 1.5 }, shoulderCenter);
+  if (shoulderCenter || nose.visible) {
+    const neckY = shoulders.length ? Math.min(...shoulders.map((item) => item.y)) : nose.y + 5;
+    const headX = Math.max(2, Math.min(COLS - 3, Math.round((shoulderCenter?.x ?? nose.x) - .5)));
+    const headY = Math.max(2, Math.min(ROWS - 3, Math.round(neckY - 4.5)));
+
+    // A five-pixel-wide face survives at building scale: outline, two eyes, and a smile.
+    context.clearRect(headX - 2, headY - 2, 5, 5);
+    context.fillStyle = "#fff";
+    context.fillRect(headX - 1, headY - 2, 3, 1);
+    context.fillRect(headX - 2, headY - 1, 1, 3);
+    context.fillRect(headX + 2, headY - 1, 1, 3);
+    context.fillRect(headX - 1, headY, 1, 1);
+    context.fillRect(headX + 1, headY, 1, 1);
+    context.fillRect(headX, headY + 1, 1, 1);
+    context.fillRect(headX - 1, headY + 2, 3, 1);
+    if (shoulderCenter) line({ x: headX + .5, y: headY + 2.5 }, shoulderCenter);
   }
   context.restore();
 
