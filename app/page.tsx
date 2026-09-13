@@ -4,11 +4,55 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const ROWS = 17;
 const COLS = 9;
+const WORK_SCALE = 8;
 type Status = "idle" | "starting" | "ready" | "live" | "error";
+type FilterId = "natural" | "anime" | "neon" | "mono";
+const FILTERS: { id: FilterId; label: string }[] = [
+  { id: "natural", label: "Natural" },
+  { id: "anime", label: "Anime" },
+  { id: "neon", label: "Neon" },
+  { id: "mono", label: "Mono" },
+];
+
+function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
+
+function applyFilter(image: ImageData, filter: FilterId) {
+  if (filter === "natural") return;
+  const { data, width, height } = image;
+  const source = new Uint8ClampedArray(data);
+  const luminance = (index: number) => source[index] * .299 + source[index + 1] * .587 + source[index + 2] * .114;
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const index = (y * width + x) * 4;
+    const left = (y * width + Math.max(0, x - 1)) * 4;
+    const right = (y * width + Math.min(width - 1, x + 1)) * 4;
+    const up = (Math.max(0, y - 1) * width + x) * 4;
+    const down = (Math.min(height - 1, y + 1) * width + x) * 4;
+    const edge = Math.abs(luminance(right) - luminance(left)) + Math.abs(luminance(down) - luminance(up));
+    const light = luminance(index);
+    if (filter === "anime") {
+      if (edge > 58) { data[index] = 7; data[index + 1] = 12; data[index + 2] = 22; }
+      else {
+        const average = (source[index] + source[index + 1] + source[index + 2]) / 3;
+        data[index] = clamp(Math.round((average + (source[index] - average) * 1.45) / 64) * 64);
+        data[index + 1] = clamp(Math.round((average + (source[index + 1] - average) * 1.45) / 64) * 64);
+        data[index + 2] = clamp(Math.round((average + (source[index + 2] - average) * 1.45) / 64) * 64);
+      }
+    } else if (filter === "neon") {
+      const glow = Math.min(255, edge * 3.2);
+      data[index] = clamp(glow * .75 + light * .12);
+      data[index + 1] = clamp(glow + light * .08);
+      data[index + 2] = clamp(120 + glow * .72);
+    } else {
+      const value = light > 120 ? 255 : light > 62 ? 145 : 8;
+      data[index] = value; data[index + 1] = value; data[index + 2] = value;
+    }
+  }
+}
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const workCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const sendingRef = useRef(false);
@@ -17,6 +61,7 @@ export default function Home() {
   const [brightness, setBrightness] = useState(1.15);
   const [contrast, setContrast] = useState(1.35);
   const [mirror, setMirror] = useState(true);
+  const [filter, setFilter] = useState<FilterId>("natural");
   const [framesSent, setFramesSent] = useState(0);
 
   const stopLive = useCallback(() => {
@@ -61,24 +106,38 @@ export default function Home() {
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) return null;
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return null;
+    const workCanvas = workCanvasRef.current ?? document.createElement("canvas");
+    workCanvasRef.current = workCanvas;
+    workCanvas.width = COLS * WORK_SCALE;
+    workCanvas.height = ROWS * WORK_SCALE;
+    const work = workCanvas.getContext("2d", { willReadFrequently: true });
+    if (!context || !work) return null;
     const targetRatio = COLS / ROWS;
     const sourceRatio = video.videoWidth / video.videoHeight;
     let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight;
     if (sourceRatio > targetRatio) { sw = video.videoHeight * targetRatio; sx = (video.videoWidth - sw) / 2; }
     else { sh = video.videoWidth / targetRatio; sy = (video.videoHeight - sh) / 2; }
-    context.save();
+    work.save();
+    work.clearRect(0, 0, workCanvas.width, workCanvas.height);
+    work.filter = `brightness(${brightness}) contrast(${contrast}) saturate(1.2)`;
+    if (mirror) { work.translate(workCanvas.width, 0); work.scale(-1, 1); }
+    work.drawImage(video, sx, sy, sw, sh, 0, 0, workCanvas.width, workCanvas.height);
+    work.restore();
+    if (filter !== "natural") {
+      const processed = work.getImageData(0, 0, workCanvas.width, workCanvas.height);
+      applyFilter(processed, filter);
+      work.putImageData(processed, 0, 0);
+    }
     context.clearRect(0, 0, COLS, ROWS);
-    context.filter = `brightness(${brightness}) contrast(${contrast}) saturate(1.2)`;
-    if (mirror) { context.translate(COLS, 0); context.scale(-1, 1); }
-    context.drawImage(video, sx, sy, sw, sh, 0, 0, COLS, ROWS);
-    context.restore();
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(workCanvas, 0, 0, COLS, ROWS);
     const data = context.getImageData(0, 0, COLS, ROWS).data;
     return Array.from({ length: ROWS }, (_, y) => Array.from({ length: COLS }, (_, x) => {
       const index = (y * COLS + x) * 4;
       return [data[index], data[index + 1], data[index + 2]];
     }));
-  }, [brightness, contrast, mirror]);
+  }, [brightness, contrast, filter, mirror]);
 
   const sendFrame = useCallback(async () => {
     if (sendingRef.current) return;
@@ -98,9 +157,18 @@ export default function Home() {
     if (!streamRef.current) return;
     setStatus("live");
     setMessage("Live on the building");
+  }, []);
+
+  useEffect(() => {
+    if (status !== "live") return;
     void sendFrame();
-    timerRef.current = window.setInterval(() => void sendFrame(), 250);
-  }, [sendFrame]);
+    const liveTimer = window.setInterval(() => void sendFrame(), 250);
+    timerRef.current = liveTimer;
+    return () => {
+      window.clearInterval(liveTimer);
+      if (timerRef.current === liveTimer) timerRef.current = null;
+    };
+  }, [sendFrame, status]);
 
   useEffect(() => {
     if (status !== "ready" && status !== "live") return;
@@ -136,6 +204,7 @@ export default function Home() {
         <aside className="control-card">
           <div className="pixel-panel"><div className="pixel-header"><span>BUILDING FEED</span><strong>17 rows × 9 columns</strong></div><canvas ref={canvasRef} width={COLS} height={ROWS} aria-label="Seventeen rows by nine columns pixel preview" /></div>
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
+          <fieldset className="filter-control"><legend>Look</legend><div className="filter-buttons">{FILTERS.map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div></fieldset>
           <label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
           <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label>
           <label className="toggle-row"><span>Mirror selfie</span><input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /></label>
