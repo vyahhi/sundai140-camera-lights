@@ -113,20 +113,23 @@ function isClearPose(landmarks: Landmark[]) {
     const point = landmarks[index];
     return Boolean(point && (point.visibility ?? 1) >= minimum && point.x >= -.03 && point.x <= 1.03 && point.y >= -.03 && point.y <= 1.03);
   };
-  if (![0, 11, 12].every((index) => visible(index, .62))) return false;
-  if (![23, 24].every((index) => visible(index, .48))) return false;
-  if (![13, 14, 15, 16].some((index) => visible(index, .45))) return false;
+  if (![0, 11, 12].every((index) => visible(index, .56))) return false;
+  const clearFacePoints = [2, 5, 7, 8].filter((index) => visible(index, .48)).length;
+  const clearArmPoints = [13, 14, 15, 16].filter((index) => visible(index, .34)).length;
+  const clearHips = [23, 24].every((index) => visible(index, .34));
+  if (clearFacePoints < 2 || (!clearHips && clearArmPoints < 2)) return false;
   const nose = landmarks[0];
   const shoulderCenter = meanPoint(landmarks, [11, 12]);
-  const hipCenter = meanPoint(landmarks, [23, 24]);
   const shoulderWidth = Math.abs(landmarks[11].x - landmarks[12].x);
+  if (shoulderWidth < .065
+    || shoulderWidth > .72
+    || shoulderCenter.y - nose.y < .035) return false;
+  if (!clearHips) return true;
+  const hipCenter = meanPoint(landmarks, [23, 24]);
   const torsoHeight = hipCenter.y - shoulderCenter.y;
-  return shoulderWidth >= .075
-    && shoulderWidth <= .7
-    && shoulderCenter.y - nose.y >= .045
-    && torsoHeight >= .08
-    && torsoHeight <= .65
-    && Math.abs(shoulderCenter.x - hipCenter.x) <= .32;
+  return torsoHeight >= .065
+    && torsoHeight <= .7
+    && Math.abs(shoulderCenter.x - hipCenter.x) <= .36;
 }
 
 function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean) {
@@ -735,7 +738,7 @@ export default function Home() {
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
           <fieldset className="filter-control"><legend>Look</legend><div className="filter-buttons">{FILTERS.map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div></fieldset>
           {(filter === "portrait" || filter === "caricature") && <div className={`face-lock ${faceStatus}`}><span aria-hidden="true">◎</span><div><strong>{faceStatus === "loading" ? "Loading face detector" : faceStatus === "locked" ? filter === "caricature" ? "Caricature locked" : "Face locked" : faceStatus === "error" ? "Face model unavailable" : status === "idle" ? filter === "caricature" ? "Caricature ready" : "Portrait ready" : "Looking for a face"}</strong><small>{faceStatus === "locked" ? filter === "caricature" ? "Your distinctive features are exaggerated" : "Eyes and expression are enhanced" : faceStatus === "error" ? "Natural pixels are still available" : status === "idle" ? "Start the camera to find your features" : "Center your face inside the guide"}</small></div></div>}
-          {filter === "stick" && <div className={`face-lock ${poseStatus}`}><span aria-hidden="true">⌁</span><div><strong>{poseStatus === "loading" ? "Loading body tracker" : poseStatus === "locked" ? "Stick Man locked" : poseStatus === "error" ? "Body model unavailable" : status === "idle" ? "Stick Man ready" : "No clear person — screen is black"}</strong><small>{poseStatus === "locked" ? "Move around — white sticks follow your pose" : poseStatus === "error" ? "Choose another look to continue" : status === "idle" ? "Step back so the camera can see your body" : "Show your head, shoulders, one arm, and hips"}</small></div></div>}
+          {filter === "stick" && <div className={`face-lock ${poseStatus}`}><span aria-hidden="true">⌁</span><div><strong>{poseStatus === "loading" ? "Loading body tracker" : poseStatus === "locked" ? "Stick Man locked" : poseStatus === "error" ? "Body model unavailable" : status === "idle" ? "Stick Man ready" : "No clear person — screen is black"}</strong><small>{poseStatus === "locked" ? "Move around — white sticks follow your pose" : poseStatus === "error" ? "Choose another look to continue" : status === "idle" ? "Start with your head and shoulders in view" : "Show your face, both shoulders, and part of your arms"}</small></div></div>}
           {filter === "caricature" && <label><span>Exaggeration <b>{caricatureStrength.toFixed(2)}×</b></span><input type="range" min="0.5" max="1.8" step="0.05" value={caricatureStrength} onChange={(event) => setCaricatureStrength(Number(event.target.value))} /></label>}
           {filter !== "stick" && <><label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
           <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label></>}
