@@ -638,7 +638,6 @@ export default function Home() {
             <video ref={videoRef} muted playsInline className={mirror ? "mirrored" : ""} />
             {status === "idle" && <div className="camera-empty"><span>◉</span><p>Your camera becomes<br />the building facade.</p></div>}
             <div className={`live-badge ${status === "live" ? "on" : ""}`}><i />{status === "live" ? "LIVE" : "PREVIEW"}</div>
-            <div className="crop-guide" aria-hidden="true" />
           </div>
           <div className="primary-controls">
             {status === "idle" || status === "error" || status === "starting" ? <button className="primary" onClick={() => void startCamera()} disabled={status === "starting"}>{status === "starting" ? "Starting…" : "Start camera"}</button> : status === "live" ? <button className="stop" onClick={stopLive}>Stop sending</button> : <button className="primary pulse" onClick={goLive}>Go live on building</button>}
