@@ -1,23 +1,33 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
 const ROWS = 17;
 const COLS = 9;
 const WORK_SCALE = 8;
 type Status = "idle" | "starting" | "ready" | "live" | "error";
-type FilterId = "natural" | "anime" | "neon" | "mono";
+type FilterId = "natural" | "portrait" | "neon" | "mono";
+type FaceStatus = "off" | "loading" | "searching" | "locked" | "error";
+type Landmark = { x: number; y: number; z: number };
+type Crop = { x: number; y: number; width: number; height: number };
 const FILTERS: { id: FilterId; label: string }[] = [
   { id: "natural", label: "Natural" },
-  { id: "anime", label: "Anime" },
+  { id: "portrait", label: "Portrait" },
   { id: "neon", label: "Neon" },
   { id: "mono", label: "Mono" },
 ];
 
+const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+const LEFT_EYE = [33, 160, 158, 133, 153, 144];
+const RIGHT_EYE = [362, 385, 387, 263, 373, 380];
+const LEFT_BROW = [70, 63, 105, 66, 107];
+const RIGHT_BROW = [336, 296, 334, 293, 300];
+
 function clamp(value: number) { return Math.max(0, Math.min(255, Math.round(value))); }
 
 function applyFilter(image: ImageData, filter: FilterId) {
-  if (filter === "natural") return;
+  if (filter === "natural" || filter === "portrait") return;
   const { data, width, height } = image;
   const source = new Uint8ClampedArray(data);
   const luminance = (index: number) => source[index] * .299 + source[index + 1] * .587 + source[index + 2] * .114;
@@ -29,15 +39,7 @@ function applyFilter(image: ImageData, filter: FilterId) {
     const down = (Math.min(height - 1, y + 1) * width + x) * 4;
     const edge = Math.abs(luminance(right) - luminance(left)) + Math.abs(luminance(down) - luminance(up));
     const light = luminance(index);
-    if (filter === "anime") {
-      if (edge > 58) { data[index] = 7; data[index + 1] = 12; data[index + 2] = 22; }
-      else {
-        const average = (source[index] + source[index + 1] + source[index + 2]) / 3;
-        data[index] = clamp(Math.round((average + (source[index] - average) * 1.45) / 64) * 64);
-        data[index + 1] = clamp(Math.round((average + (source[index + 1] - average) * 1.45) / 64) * 64);
-        data[index + 2] = clamp(Math.round((average + (source[index + 2] - average) * 1.45) / 64) * 64);
-      }
-    } else if (filter === "neon") {
+    if (filter === "neon") {
       const glow = Math.min(255, edge * 3.2);
       data[index] = clamp(glow * .75 + light * .12);
       data[index + 1] = clamp(glow + light * .08);
@@ -49,6 +51,99 @@ function applyFilter(image: ImageData, filter: FilterId) {
   }
 }
 
+function meanPoint(landmarks: Landmark[], indexes: number[]) {
+  const total = indexes.reduce((sum, index) => ({ x: sum.x + landmarks[index].x, y: sum.y + landmarks[index].y }), { x: 0, y: 0 });
+  return { x: total.x / indexes.length, y: total.y / indexes.length };
+}
+
+function faceCrop(landmarks: Landmark[]): Crop {
+  let minX = 1, minY = 1, maxX = 0, maxY = 0;
+  for (const point of landmarks) {
+    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
+  }
+  const faceWidth = maxX - minX;
+  const faceHeight = maxY - minY;
+  let height = Math.min(1, Math.max(faceHeight * 1.62, faceWidth / (COLS / ROWS) * 1.08));
+  let width = height * COLS / ROWS;
+  if (width > 1) { width = 1; height = ROWS / COLS; }
+  const centerX = (minX + maxX) / 2;
+  const centerY = minY + faceHeight * .58;
+  return {
+    x: Math.max(0, Math.min(1 - width, centerX - width / 2)),
+    y: Math.max(0, Math.min(1 - height, centerY - height * .43)),
+    width,
+    height,
+  };
+}
+
+function drawSemanticPortrait(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean) {
+  const cell = (point: Landmark | { x: number; y: number }) => {
+    let x = (point.x - crop.x) / crop.width * COLS;
+    if (mirror) x = COLS - x;
+    return { x: Math.max(0, Math.min(COLS - 1, Math.round(x - .5))), y: Math.max(0, Math.min(ROWS - 1, Math.round((point.y - crop.y) / crop.height * ROWS - .5))) };
+  };
+  const paint = (x: number, y: number, color: string, alpha = 1) => {
+    context.globalAlpha = alpha;
+    context.fillStyle = color;
+    context.fillRect(x, y, 1, 1);
+    context.globalAlpha = 1;
+  };
+
+  // Quiet the background so the head silhouette reads before its details.
+  const faceCenter = cell(meanPoint(landmarks, FACE_OVAL));
+  const templeA = cell(landmarks[234]);
+  const templeB = cell(landmarks[454]);
+  const chin = cell(landmarks[152]);
+  const forehead = cell(landmarks[10]);
+  const rx = Math.max(2, Math.abs(templeB.x - templeA.x) / 2 + .65);
+  const ry = Math.max(3, Math.abs(chin.y - forehead.y) / 2 + .75);
+  const pixels = context.getImageData(0, 0, COLS, ROWS);
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const outside = ((x - faceCenter.x) / rx) ** 2 + ((y - faceCenter.y) / ry) ** 2 > 1.28;
+    const index = (y * COLS + x) * 4;
+    if (outside) {
+      pixels.data[index] = clamp(pixels.data[index] * .24);
+      pixels.data[index + 1] = clamp(pixels.data[index + 1] * .28);
+      pixels.data[index + 2] = clamp(pixels.data[index + 2] * .34);
+    } else {
+      pixels.data[index] = clamp(Math.round(pixels.data[index] / 42) * 42);
+      pixels.data[index + 1] = clamp(Math.round(pixels.data[index + 1] / 42) * 42);
+      pixels.data[index + 2] = clamp(Math.round(pixels.data[index + 2] / 42) * 42);
+    }
+  }
+  context.putImageData(pixels, 0, 0);
+
+  // Sparse contours preserve the face at a resolution where ordinary edges vanish.
+  for (let index = 0; index < FACE_OVAL.length; index += 3) {
+    const point = cell(landmarks[FACE_OVAL[index]]);
+    paint(point.x, point.y, "#08151b", .82);
+  }
+  const leftEye = cell(meanPoint(landmarks, LEFT_EYE));
+  const rightEye = cell(meanPoint(landmarks, RIGHT_EYE));
+  const leftEyeOpen = Math.abs(landmarks[159].y - landmarks[145].y) / Math.max(.001, Math.abs(landmarks[133].x - landmarks[33].x));
+  const rightEyeOpen = Math.abs(landmarks[386].y - landmarks[374].y) / Math.max(.001, Math.abs(landmarks[263].x - landmarks[362].x));
+  paint(leftEye.x, leftEye.y, leftEyeOpen > .075 ? "#eafff5" : "#183037");
+  paint(rightEye.x, rightEye.y, rightEyeOpen > .075 ? "#eafff5" : "#183037");
+  const leftBrow = cell(meanPoint(landmarks, LEFT_BROW));
+  const rightBrow = cell(meanPoint(landmarks, RIGHT_BROW));
+  paint(leftBrow.x, Math.min(leftEye.y - 1, leftBrow.y), "#102026", .95);
+  paint(rightBrow.x, Math.min(rightEye.y - 1, rightBrow.y), "#102026", .95);
+
+  const nose = cell(landmarks[1]);
+  paint(nose.x, nose.y, "#ffbe72", .78);
+  const mouthLeft = cell(landmarks[61]);
+  const mouthRight = cell(landmarks[291]);
+  const mouthCenter = cell(meanPoint(landmarks, [13, 14, 0, 17]));
+  const mouthMin = Math.min(mouthLeft.x, mouthRight.x);
+  const mouthMax = Math.max(mouthLeft.x, mouthRight.x);
+  const mouthWidth = Math.max(1, Math.min(3, mouthMax - mouthMin + 1));
+  const startX = Math.max(0, Math.min(COLS - mouthWidth, mouthCenter.x - Math.floor(mouthWidth / 2)));
+  for (let x = startX; x < startX + mouthWidth; x++) paint(x, mouthCenter.y, "#ff5c88");
+  const mouthOpen = Math.abs(landmarks[13].y - landmarks[14].y) / Math.max(.001, Math.abs(landmarks[291].x - landmarks[61].x));
+  if (mouthOpen > .09 && mouthCenter.y < ROWS - 1) paint(mouthCenter.x, mouthCenter.y + 1, "#5a103a");
+}
+
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -56,12 +151,18 @@ export default function Home() {
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const sendingRef = useRef(false);
+  const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
+  const landmarksRef = useRef<Landmark[] | null>(null);
+  const lastDetectionRef = useRef(0);
+  const lastFaceSeenRef = useRef(0);
+  const cropRef = useRef<Crop | null>(null);
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("Camera is off");
   const [brightness, setBrightness] = useState(1.15);
   const [contrast, setContrast] = useState(1.35);
   const [mirror, setMirror] = useState(true);
-  const [filter, setFilter] = useState<FilterId>("natural");
+  const [filter, setFilter] = useState<FilterId>("portrait");
+  const [faceStatus, setFaceStatus] = useState<FaceStatus>("off");
   const [framesSent, setFramesSent] = useState(0);
 
   const stopLive = useCallback(() => {
@@ -101,6 +202,32 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    if (filter !== "portrait") { setFaceStatus("off"); return; }
+    if (faceLandmarkerRef.current) { setFaceStatus(landmarksRef.current ? "locked" : "searching"); return; }
+    let cancelled = false;
+    setFaceStatus("loading");
+    void (async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks("/mediapipe");
+        const landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: "/mediapipe/face_landmarker.task" },
+          runningMode: "VIDEO",
+          numFaces: 1,
+          minFaceDetectionConfidence: .55,
+          minFacePresenceConfidence: .55,
+          minTrackingConfidence: .55,
+        });
+        if (cancelled) { landmarker.close(); return; }
+        faceLandmarkerRef.current = landmarker;
+        setFaceStatus("searching");
+      } catch {
+        if (!cancelled) setFaceStatus("error");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [filter]);
+
   const makeFrame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -112,11 +239,47 @@ export default function Home() {
     workCanvas.height = ROWS * WORK_SCALE;
     const work = workCanvas.getContext("2d", { willReadFrequently: true });
     if (!context || !work) return null;
-    const targetRatio = COLS / ROWS;
-    const sourceRatio = video.videoWidth / video.videoHeight;
-    let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight;
-    if (sourceRatio > targetRatio) { sw = video.videoHeight * targetRatio; sx = (video.videoWidth - sw) / 2; }
-    else { sh = video.videoWidth / targetRatio; sy = (video.videoHeight - sh) / 2; }
+    const now = performance.now();
+    if (filter === "portrait" && faceLandmarkerRef.current && now - lastDetectionRef.current > 85) {
+      lastDetectionRef.current = now;
+      const result = faceLandmarkerRef.current.detectForVideo(video, now);
+      const detected = result.faceLandmarks[0] as Landmark[] | undefined;
+      if (detected) {
+        const previous = landmarksRef.current;
+        landmarksRef.current = previous?.length === detected.length
+          ? detected.map((point, index) => ({ x: previous[index].x * .68 + point.x * .32, y: previous[index].y * .68 + point.y * .32, z: previous[index].z * .68 + point.z * .32 }))
+          : detected;
+        lastFaceSeenRef.current = now;
+        setFaceStatus((current) => current === "locked" ? current : "locked");
+      } else if (now - lastFaceSeenRef.current > 550) {
+        landmarksRef.current = null;
+        cropRef.current = null;
+        setFaceStatus((current) => current === "searching" ? current : "searching");
+      }
+    }
+    const landmarks = filter === "portrait" ? landmarksRef.current : null;
+    let normalizedCrop: Crop;
+    if (landmarks) {
+      const next = faceCrop(landmarks);
+      const previous = cropRef.current;
+      normalizedCrop = previous ? {
+        x: previous.x * .78 + next.x * .22,
+        y: previous.y * .78 + next.y * .22,
+        width: previous.width * .78 + next.width * .22,
+        height: previous.height * .78 + next.height * .22,
+      } : next;
+      cropRef.current = normalizedCrop;
+    } else {
+      const targetRatio = COLS / ROWS;
+      const sourceRatio = video.videoWidth / video.videoHeight;
+      normalizedCrop = sourceRatio > targetRatio
+        ? { x: (1 - targetRatio / sourceRatio) / 2, y: 0, width: targetRatio / sourceRatio, height: 1 }
+        : { x: 0, y: (1 - sourceRatio / targetRatio) / 2, width: 1, height: sourceRatio / targetRatio };
+    }
+    const sx = normalizedCrop.x * video.videoWidth;
+    const sy = normalizedCrop.y * video.videoHeight;
+    const sw = normalizedCrop.width * video.videoWidth;
+    const sh = normalizedCrop.height * video.videoHeight;
     work.save();
     work.clearRect(0, 0, workCanvas.width, workCanvas.height);
     work.filter = `brightness(${brightness}) contrast(${contrast}) saturate(1.2)`;
@@ -132,6 +295,7 @@ export default function Home() {
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
     context.drawImage(workCanvas, 0, 0, COLS, ROWS);
+    if (filter === "portrait" && landmarks) drawSemanticPortrait(context, landmarks, normalizedCrop, mirror);
     const data = context.getImageData(0, 0, COLS, ROWS).data;
     return Array.from({ length: ROWS }, (_, y) => Array.from({ length: COLS }, (_, x) => {
       const index = (y * COLS + x) * 4;
@@ -179,6 +343,7 @@ export default function Home() {
   useEffect(() => () => {
     if (timerRef.current !== null) window.clearInterval(timerRef.current);
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    faceLandmarkerRef.current?.close();
   }, []);
 
   return (
@@ -205,6 +370,7 @@ export default function Home() {
           <div className="pixel-panel"><div className="pixel-header"><span>BUILDING FEED</span><strong>17 rows × 9 columns</strong></div><canvas ref={canvasRef} width={COLS} height={ROWS} aria-label="Seventeen rows by nine columns pixel preview" /></div>
           <div className="status-line"><span className={`status-dot ${status}`} /> <span>{message}</span></div>
           <fieldset className="filter-control"><legend>Look</legend><div className="filter-buttons">{FILTERS.map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}</div></fieldset>
+          {filter === "portrait" && <div className={`face-lock ${faceStatus}`}><span aria-hidden="true">◎</span><div><strong>{faceStatus === "loading" ? "Loading face detector" : faceStatus === "locked" ? "Face locked" : faceStatus === "error" ? "Portrait unavailable" : status === "idle" ? "Portrait ready" : "Looking for a face"}</strong><small>{faceStatus === "locked" ? "Eyes and expression are enhanced" : faceStatus === "error" ? "Natural pixels are still available" : status === "idle" ? "Start the camera to find your features" : "Center your face inside the guide"}</small></div></div>}
           <label><span>Brightness <b>{brightness.toFixed(2)}×</b></span><input type="range" min="0.5" max="2" step="0.05" value={brightness} onChange={(event) => setBrightness(Number(event.target.value))} /></label>
           <label><span>Contrast <b>{contrast.toFixed(2)}×</b></span><input type="range" min="0.5" max="2.5" step="0.05" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} /></label>
           <label className="toggle-row"><span>Mirror selfie</span><input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /></label>
