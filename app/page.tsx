@@ -431,7 +431,14 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (filter !== "portrait" && filter !== "caricature") { setFaceStatus("off"); return; }
+    if (filter !== "portrait" && filter !== "caricature") {
+      faceLandmarkerRef.current?.close();
+      faceLandmarkerRef.current = null;
+      landmarksRef.current = null;
+      cropRef.current = null;
+      setFaceStatus("off");
+      return;
+    }
     if (faceLandmarkerRef.current) { setFaceStatus(landmarksRef.current ? "locked" : "searching"); return; }
     let cancelled = false;
     setFaceStatus("loading");
@@ -457,7 +464,14 @@ export default function Home() {
   }, [filter]);
 
   useEffect(() => {
-    if (filter !== "stick") { setPoseStatus("off"); return; }
+    if (filter !== "stick") {
+      poseLandmarkerRef.current?.close();
+      poseLandmarkerRef.current = null;
+      poseLandmarksRef.current = null;
+      poseCropRef.current = null;
+      setPoseStatus("off");
+      return;
+    }
     if (poseLandmarkerRef.current) { setPoseStatus(poseLandmarksRef.current ? "locked" : "searching"); return; }
     let cancelled = false;
     setPoseStatus("loading");
