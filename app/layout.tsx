@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://you-in-light.sandy-hen-0362.chatgpt.site'),
+  metadataBase: new URL('https://you-in-light.guusuu.chatgpt.site'),
   title: 'You, In Light — Green Building Camera',
   description: 'Turn your webcam into a live 9 by 17 pixel portrait on the Green Building.',
   openGraph: {
