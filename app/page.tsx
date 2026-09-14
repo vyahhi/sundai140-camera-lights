@@ -107,7 +107,7 @@ function isClearPose(landmarks: Landmark[]) {
 }
 
 function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[], crop: Crop, mirror: boolean) {
-  const point = (index: number) => {
+  const projectedPoint = (index: number) => {
     const landmark = landmarks[index];
     let x = (landmark.x - crop.x) / crop.width * COLS;
     if (mirror) x = COLS - x;
@@ -116,6 +116,17 @@ function drawStickFigure(context: CanvasRenderingContext2D, landmarks: Landmark[
       y: (landmark.y - crop.y) / crop.height * ROWS,
       visible: (landmark.visibility ?? 1) > .42 && landmark.x > -.12 && landmark.x < 1.12 && landmark.y > -.12 && landmark.y < 1.12,
     };
+  };
+  const projectedNose = projectedPoint(0);
+  const projectedShoulders = [projectedPoint(11), projectedPoint(12)].filter((item) => item.visible);
+  const projectedNeckY = projectedShoulders.length
+    ? Math.min(...projectedShoulders.map((item) => item.y))
+    : projectedNose.y + 5;
+  const projectedHeadY = Math.max(2, Math.min(ROWS - 3, Math.round(projectedNeckY - 4.5)));
+  const verticalShift = Math.max(0, projectedHeadY - 3);
+  const point = (index: number) => {
+    const projected = projectedPoint(index);
+    return { ...projected, y: projected.y - verticalShift };
   };
   context.save();
   context.fillStyle = "#000";
