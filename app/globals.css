@@ -1,4 +1,20 @@
 @import 'tailwindcss';
+@media(min-width:801px) and (max-height:1000px){
+  .app-shell{padding-top:14px!important;padding-bottom:14px!important}
+  .topbar{margin-bottom:12px!important}
+  h1{font-size:clamp(38px,6dvh,62px)!important}
+  .camera-card{padding:10px!important}
+  .camera-stage,video{height:calc(100dvh - 190px)!important;min-height:0!important;max-height:520px}
+  .primary-controls{padding-top:10px!important}
+  .primary-controls button{min-height:46px!important}
+  .control-card{gap:8px!important;padding:12px!important}
+  .pixel-panel{padding:10px!important}
+  .pixel-header{margin-bottom:8px!important}
+  .pixel-panel canvas{width:auto!important;height:min(30dvh,260px)!important;max-width:100%}
+  .face-lock{margin-top:0!important;padding:7px 10px!important}
+  .stats div{padding:9px!important}
+  .privacy{line-height:1.3!important}
+}
 .filter-buttons{grid-template-columns:repeat(3,1fr)!important}
 .filter-control{min-width:0;margin:0;padding:0;border:0}.filter-control legend{margin-bottom:9px;color:#a7bcc1;font-size:13px;font-weight:750}.filter-buttons{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.filter-buttons button{min-width:0;border:1px solid #ffffff18;border-radius:11px;padding:9px 4px;color:#8ca7ad;background:#10232a;font-size:12px;font-weight:800;transition:border-color .18s,color .18s,background .18s}.filter-buttons button:hover{color:white;border-color:#69ffe055}.filter-buttons button.active{color:#021511;border-color:var(--cyan);background:var(--cyan);box-shadow:0 0 20px #69ffe025}
 .face-lock{display:flex;align-items:center;gap:11px;margin-top:-7px;border:1px solid #ffffff12;border-radius:14px;padding:10px 12px;color:#78979e;background:#081a20}.face-lock>span{font-size:24px;line-height:1}.face-lock div{display:flex;min-width:0;flex-direction:column;gap:2px}.face-lock strong{color:#d9ebee;font-size:13px}.face-lock small{font-size:11px}.face-lock.locked{border-color:#69ffe03d;background:#09251f}.face-lock.locked>span,.face-lock.locked strong{color:var(--cyan)}.face-lock.loading>span{animation:turn 1.3s linear infinite}.face-lock.error>span,.face-lock.error strong{color:#ff6680}
